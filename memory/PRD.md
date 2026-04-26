@@ -35,20 +35,19 @@
 - Plan completo descargable como Markdown.
 
 ## What's been implemented (2026-01)
-- ✅ Backend: 11 endpoints REST funcionando 100% (testing agent)
-  - `/api/plan/data` y `/api/plan/markdown` (contenido del plan)
-  - `/api/journal` CRUD + `/api/journal/stats` (stats agregadas)
+- ✅ Backend: 13 endpoints REST funcionando
+  - `/api/plan/data` y `/api/plan/markdown`
+  - `/api/docs` y `/api/docs/{id}` — sirve los READMEs por componente
+  - `/api/journal` CRUD + `/api/journal/stats`
   - `/api/checklist/{date}` GET + POST upsert
   - `/api/risk/calc` con validaciones y warnings
-- ✅ Frontend dashboard 9 secciones con sidebar navegable, topbar live (UTC, equity, P&L, status), ticker animado de reglas
-- ✅ MCPs section con prompts copy-paste para Claude Code (4 MCPs)
-- ✅ Calculadora de riesgo con 5 presets (EURUSD, USDJPY, XAUUSD, NAS100, BTCUSD)
-- ✅ Trade journal con form, tabla, stats y equity curve (recharts)
+- ✅ Frontend dashboard 10 secciones (Overview, MCPs, Strategies, Rules, Checklist, Risk Calc, Journal, Setup, Mindset, **Architecture Docs**)
+- ✅ **7 READMEs detallados en `/app/docs/`** (1 overview, 4 MCPs, 1 dashboard, 1 setup) — cada uno con propósito, arquitectura interna, schemas, tools, server skeleton, configs, testing y troubleshooting
+- ✅ Sección "Arch. Docs" en sidebar con 7 cards visuales por tipo, viewer inline y descarga individual + bulk
+- ✅ Calculadora de riesgo con 5 presets
+- ✅ Trade journal con form, stats y equity curve
 - ✅ Checklist diario interactivo persistente
-- ✅ Setup guide 9 pasos
-- ✅ Mindset section
-- ✅ Download del plan completo como `.md`
-- ✅ Tema Bloomberg-terminal con tipografías Chivo/IBM Plex Sans/JetBrains Mono
+- ✅ Tema Bloomberg-terminal (Chivo + IBM Plex Sans + JetBrains Mono)
 - ✅ data-testid en todos los elementos interactivos
 
 ## Tests
@@ -66,9 +65,10 @@
 - **P3**: Modo "demo vs real" toggle (separar journals)
 
 ## Files
-- `/app/backend/server.py` — FastAPI con 11 endpoints
-- `/app/backend/plan_content.py` — todo el contenido estático (MCPs, strategies, rules, checklist, mindset, setup, build_markdown)
+- `/app/backend/server.py` — FastAPI con 13 endpoints (incluye `/api/docs` y `/api/docs/{id}`)
+- `/app/backend/plan_content.py` — todo el contenido estático
+- `/app/docs/00-OVERVIEW.md` · `01-MCP-NEWS.md` · `02-MCP-TRADING.md` · `03-MCP-ANALYSIS.md` · `04-MCP-RISK.md` · `05-DASHBOARD.md` · `06-SETUP-WSL-MT5-CLAUDE.md` — READMEs detallados por componente
 - `/app/frontend/src/Dashboard.jsx` — orquestador
 - `/app/frontend/src/components/{Sidebar,TopBar,Footer}.jsx`
-- `/app/frontend/src/sections/{Overview,MCPArchitecture,Strategies,Rules,Checklist,RiskCalculator,TradeJournal,SetupGuide,Mindset}.jsx`
-- `/app/backend/tests/backend_test.py` — 15 tests pytest creados por testing agent
+- `/app/frontend/src/sections/{Overview,MCPArchitecture,Strategies,Rules,Checklist,RiskCalculator,TradeJournal,SetupGuide,Mindset,ArchitectureDocs}.jsx`
+- `/app/backend/tests/backend_test.py` — tests pytest

@@ -133,6 +133,42 @@ async def get_plan_markdown():
     return build_markdown()
 
 
+# ----- Architecture docs (READMEs) -----
+
+DOCS_DIR = Path(__file__).resolve().parent.parent / "docs"
+
+DOCS_META = [
+    {"id": "00-overview", "file": "00-OVERVIEW.md", "title": "Arquitectura General", "kind": "overview", "order": 0},
+    {"id": "01-mcp-news", "file": "01-MCP-NEWS.md", "title": "MCP de Noticias & Calendario", "kind": "mcp", "order": 1},
+    {"id": "02-mcp-trading", "file": "02-MCP-TRADING.md", "title": "MCP de Trading (MT5)", "kind": "mcp", "order": 2},
+    {"id": "03-mcp-analysis", "file": "03-MCP-ANALYSIS.md", "title": "MCP de Análisis Técnico", "kind": "mcp", "order": 3},
+    {"id": "04-mcp-risk", "file": "04-MCP-RISK.md", "title": "MCP de Gestión de Riesgo", "kind": "mcp", "order": 4},
+    {"id": "05-dashboard", "file": "05-DASHBOARD.md", "title": "Dashboard Web (este sitio)", "kind": "system", "order": 5},
+    {"id": "06-setup", "file": "06-SETUP-WSL-MT5-CLAUDE.md", "title": "Setup completo WSL + MT5 + Claude", "kind": "guide", "order": 6},
+]
+
+
+@api_router.get("/docs")
+async def list_docs():
+    items = []
+    for d in DOCS_META:
+        path = DOCS_DIR / d["file"]
+        size = path.stat().st_size if path.exists() else 0
+        items.append({**d, "size_bytes": size, "exists": path.exists()})
+    return {"docs": items}
+
+
+@api_router.get("/docs/{doc_id}", response_class=PlainTextResponse)
+async def get_doc(doc_id: str):
+    meta = next((m for m in DOCS_META if m["id"] == doc_id), None)
+    if not meta:
+        raise HTTPException(404, "doc not found")
+    path = DOCS_DIR / meta["file"]
+    if not path.exists():
+        raise HTTPException(404, "file missing on disk")
+    return path.read_text(encoding="utf-8")
+
+
 # ----- Trade Journal -----
 
 @api_router.post("/journal", response_model=TradeEntry)

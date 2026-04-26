@@ -11,6 +11,7 @@ import RiskCalculator from "./sections/RiskCalculator";
 import TradeJournal from "./sections/TradeJournal";
 import SetupGuide from "./sections/SetupGuide";
 import Mindset from "./sections/Mindset";
+import ArchitectureDocs from "./sections/ArchitectureDocs";
 import Footer from "./components/Footer";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -55,6 +56,7 @@ export default function Dashboard() {
             "journal",
             "setup",
             "mindset",
+            "architecture-docs",
         ];
         const observer = new IntersectionObserver(
             (entries) => {
@@ -116,6 +118,7 @@ export default function Dashboard() {
                     />
                     <SetupGuide steps={planData.setup_guide} />
                     <Mindset principles={planData.mindset} />
+                    <ArchitectureDocs api={API} />
                     <Footer api={API} />
                 </div>
             </main>

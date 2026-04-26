@@ -8,6 +8,7 @@ import {
     BookOpenCheck,
     Wrench,
     Brain,
+    FileText,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -20,6 +21,7 @@ const NAV_ITEMS = [
     { id: "journal", label: "Trade Journal", icon: BookOpenCheck, code: "06" },
     { id: "setup", label: "Setup Guide", icon: Wrench, code: "07" },
     { id: "mindset", label: "Mindset", icon: Brain, code: "08" },
+    { id: "architecture-docs", label: "Arch. Docs", icon: FileText, code: "09" },
 ];
 
 export default function Sidebar({ activeSection }) {
