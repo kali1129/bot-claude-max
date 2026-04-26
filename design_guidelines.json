@@ -1,0 +1,84 @@
+{
+  "theme": {
+    "mode": "dark",
+    "archetype": "Archetype 4 (Swiss & High-Contrast)",
+    "description": "Bloomberg-terminal-meets-modern-editorial. Serious trader's command center with high data density. Risk is real ($800 real money), therefore the aesthetics are highly professional, rigid, dark terminal-inspired. Avoid generic SaaS look. Color is function only."
+  },
+  "colors": {
+    "background": "#0A0A0A",
+    "surface": "#121212",
+    "border": "#27272A",
+    "text_primary": "#F4F4F5",
+    "text_secondary": "#A1A1AA",
+    "accent_green": "#10B981",
+    "accent_red": "#EF4444",
+    "accent_amber": "#F59E0B",
+    "accent_blue": "#3B82F6"
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Chivo",
+      "body": "IBM Plex Sans",
+      "mono": "JetBrains Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl tracking-tight font-black",
+      "h2": "text-2xl tracking-tight font-bold",
+      "h3": "text-xl font-semibold",
+      "body": "text-sm",
+      "data": "font-mono text-sm tracking-tight text-white",
+      "labels": "text-xs font-mono uppercase tracking-[0.2em] text-zinc-500"
+    }
+  },
+  "layout": {
+    "spacing_system": "Dense and compact. Use p-4 or p-6 for containers to maximize data density on screen. Avoid overly generous whitespace for data panels.",
+    "grid_strategy": "Control Room Grid. grid-cols-1 md:grid-cols-3 lg:grid-cols-4 with tight gaps (gap-4). Every pixel must be utilized with 100% height stretching. Panels fit together like a masonry layout or exact bento.",
+    "surfaces": "Grid Borders: expose the skeleton. Container with border-collapse or 1px subtle borders. Use sharp edges or max 4px border-radius. No soft shadows.",
+    "alignment": "Left-align data arrays and tabular content. Number values right-aligned. Optical alignment for icons."
+  },
+  "components": {
+    "strategy": "Shadcn UI base. Strip out generic card rounded corners, make them 0px to 4px. Use Shadcn charts/Recharts for visual data. Highly customized data tables and forms for inputs. The overall feel is rigid and technical.",
+    "buttons": "Flat solid surfaces. Hover states must have a lighter hue and strong contrast. Primary CTAs use Accent Green or Accent Blue. Use sharp 0-4px border radius.",
+    "panels": "Terminal look with solid #121212 background with 1px border. No glassmorphism to avoid distraction and maintain readability.",
+    "navigation": "Sticky left sidebar or dense top fixed header with solid dark background.",
+    "instructions_to_main_agent": "Ensure 'JetBrains Mono' is used for all numbers, prices, risk percentages, and code blocks. 'Chivo' or 'IBM Plex Sans' for descriptive text. Add data-testid to all interactive elements."
+  },
+  "motion": {
+    "rules": "Minimalist. Micro-interactions for feedback on buttons and rows. No extravagant scroll animations or parallax. The data needs to feel real-time and instant."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://static.prod-images.emergentagent.com/jobs/c1622b60-145b-4829-b8e7-618074ebab60/images/9ece3139d0d811c3afeff347d3b00f93eb897767f1fb2b0bf1a74fd5b3a22c8c.png",
+        "category": "hero_background",
+        "description": "Abstract dark technical financial background, glowing chart lines"
+      },
+      {
+        "url": "https://static.prod-images.emergentagent.com/jobs/c1622b60-145b-4829-b8e7-618074ebab60/images/4846fe2658b9652d0d2f96fe986bb62982928251be85d37d5d90cd65d72012fe.png",
+        "category": "terminal_data_background",
+        "description": "Close up of abstract raw data terminal, deep dark monochrome charcoal"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1643962579745-bcaa05ffc573?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTV8MHwxfHNlYXJjaHwzfHxkYXJrJTIwdHJhZGluZyUyMGNoYXJ0cyUyMGZpbmFuY2V8ZW58MHx8fHwxNzc3MjE3NzEzfDA&ixlib=rb-4.1.0&q=85",
+        "category": "trading_charts_1",
+        "description": "close up of a computer screen with a chart on it"
+      }
+    ],
+    "icons_library": "lucide-react"
+  },
+  "content_architecture": {
+    "sections": [
+      "Hero/Overview: Top bar showing capital ($800), Risk Status, Open Positions (Max 1), Today's Market.",
+      "MCP Architecture: Terminal-styled section explaining 4 MCPs (News, Trading-MT5, Tech Analysis, Risk) with copy-paste prompts for Claude Desktop.",
+      "Strategies Catalog: Grid of valid setups (intraday, overnight). R:R, win rate targets.",
+      "Strict Rules Panel: Red/Amber tinted panel showing non-negotiable rules (1-2% risk, max drawdown, news blackout).",
+      "Daily Checklist: Interactive checkboxes for pre-market, during, post-market.",
+      "Risk Calculator: Interactive tool (Balance, Risk %, SL pips -> Lot Size).",
+      "Trade Journal: Table logging trades, historical view, performance stats.",
+      "Setup Guide: Markdown-styled doc panel for WSL+MT5+Claude setup."
+    ]
+  },
+  "testing": {
+    "rules": "All interactive and key informational elements MUST include data-testid attribute. Format: kebab-case, role-based. Example: data-testid='trade-submit-button', data-testid='risk-percentage-value'."
+  }
+}
