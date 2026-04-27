@@ -80,15 +80,22 @@ El `command` en `claude_desktop_config.json` apunta al `python.exe` de Windows, 
 trading-mt5-mcp/
 ├── server.py
 ├── requirements.txt
-├── .env                      # MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
-├── .env.example
+├── .env                      # ver mcp-scaffolds/trading-mt5-mcp/.env.example
 ├── lib/
 │   ├── connection.py         # connect/reconnect logic
-│   ├── guards.py             # 7 pre-trade checks
-│   ├── orders.py             # send_order wrapper
+│   ├── guards.py             # pre-trade checks (importan de _shared/rules.py)
+│   ├── orders.py             # send_order wrapper (paper vs real)
+│   ├── idempotency.py        # client_order_id cache
+│   ├── sync.py               # poller MT5 → dashboard journal
 │   └── logger.py             # JSONL logger
+├── sync.json                 # last_seen_ticket persistido
+├── paper_orders.jsonl        # log de órdenes en paper mode
 └── tests/
-    └── test_guards.py        # tests aislados de guardas (sin tocar MT5)
+    ├── test_guards.py        # cada guarda con caso adversarial
+    ├── test_idempotency.py   # mismo coid → mismo ticket
+    ├── test_kill_switch.py   # HALT bloquea antes que todo
+    ├── test_paper_mode.py    # 100 paper orders sin tocar MT5 (mock)
+    └── test_sync.py          # ordering + retry behavior
 ```
 
 ## Dependencies
@@ -105,12 +112,17 @@ pydantic>=2.6
 
 | Var | Obligatoria | Notas |
 |---|---|---|
-| `MT5_LOGIN` | sí | ID numérico de cuenta |
-| `MT5_PASSWORD` | sí | **Contraseña Investor** si quieres modo lectura, master para trading |
-| `MT5_SERVER` | sí | ej: `Pepperstone-Demo`, `ICMarketsSC-Live01` |
+| `MT5_LOGIN` | sí (modo demo/live) | ID numérico de cuenta |
+| `MT5_PASSWORD` | sí (modo demo/live) | **Contraseña Investor** para modo lectura, master para trading |
+| `MT5_SERVER` | sí (modo demo/live) | ej: `Pepperstone-Demo`, `ICMarketsSC-Live01` |
 | `MT5_PATH` | no | path al `terminal64.exe` si tienes varios MT5 instalados |
+| `TRADING_MODE` | no | `paper` (default) \| `demo` \| `live` |
+| `MT5_MAGIC` | no | ID único 8-dígitos (default `20260427`) |
 | `MAX_LOTS_PER_TRADE` | no | cap absoluto, default `0.5` |
-| `BLOCKED_HOURS_UTC` | no | rangos donde NO operar, default `21:00-07:00` |
+| `HALT_FILE` | no | path del kill-switch, default `~/mcp/.HALT` |
+| `DASHBOARD_URL` | sí (sync) | ej `http://localhost:8000` |
+| `DASHBOARD_TOKEN` | recomendada | bearer para `POST /api/journal` |
+| `SYNC_INTERVAL_SECONDS` | no | default `30` |
 | `LOG_LEVEL` | no | `INFO` |
 
 ⚠️ Empieza con cuenta DEMO. **NO toques `.env` de cuenta real hasta haber pasado 2 semanas / 40 trades demo con expectancy > +0.30R.**
@@ -119,15 +131,82 @@ pydantic>=2.6
 
 ## Constantes hardcodeadas (no se sobrescriben con env)
 
+**No se redefinen aquí.** Se importan del módulo `~/mcp/_shared/rules.py` (ver
+`docs/09-SHARED-RULES.md`):
+
 ```python
-# Estas NO se exponen como env. Son la última línea de defensa.
-MAX_RISK_PER_TRADE_PCT = 1.0      # nunca arriesgar más de 1%
-MAX_DAILY_LOSS_PCT     = 3.0      # halt diario al -3%
-MAX_OPEN_POSITIONS     = 1        # nunca más de 1 abierta
-MIN_RR                 = 2.0      # R:R mínimo 1:2
+import sys, os
+sys.path.insert(0, os.path.expanduser("~/mcp/_shared"))
+from rules import (
+    MAX_RISK_PER_TRADE_PCT,   # 1.0
+    MAX_DAILY_LOSS_PCT,       # 3.0
+    MAX_OPEN_POSITIONS,       # 1
+    MIN_RR,                   # 2.0
+    is_blocked_hour,
+    passes_rr,
+    max_risk_dollars,
+)
 ```
 
-Cambiar estos requeriría editar el código y recompilar el MCP. Eso es deliberado.
+Cambiar un valor requiere editar `_shared/rules.py` y bumpear su `__version__`.
+Esto es deliberado: una sola fuente de verdad para `risk-mcp` y este MCP.
+
+## Modos de trading (paper / demo / live)
+
+`TRADING_MODE` (env, default `paper`). Ver `docs/10-KILL-SWITCH.md` para el
+detalle. Resumen:
+
+- **paper**: el MCP corre íntegramente, todas las guardas, todo el sync; pero
+  `place_order` no llama `mt5.order_send`. Genera un ticket sintético y loggea
+  en `paper_orders.jsonl`.
+- **demo**: MT5 demo. Real broker, dinero ficticio.
+- **live**: MT5 cuenta real. Solo después de validar la batería de tests.
+
+## Kill-switch (primera guarda)
+
+`place_order` lee `~/mcp/.HALT` antes que cualquier otra cosa. Si existe →
+`{"ok": false, "reason": "HALTED", "detail": <reason del archivo>}`. Loggeado
+en `orders.jsonl`. Ver `docs/10-KILL-SWITCH.md`.
+
+## Idempotency (`client_order_id`)
+
+`place_order` acepta un parámetro opcional `client_order_id` (string). Si
+recibe el mismo id dentro de un TTL de 60 s, devuelve el resultado anterior
+sin volver a llamar a MT5. Implementar con un dict en memoria
+`{client_order_id: (timestamp, result)}` y purgar entradas viejas en cada
+llamada.
+
+```python
+_recent: dict[str, tuple[float, dict]] = {}
+
+def _check_idempotency(coid: str | None) -> dict | None:
+    if not coid:
+        return None
+    now = time.time()
+    # Purga
+    for k, (ts, _) in list(_recent.items()):
+        if now - ts > 60:
+            del _recent[k]
+    if coid in _recent:
+        return _recent[coid][1]
+    return None
+
+def _remember(coid: str | None, result: dict) -> None:
+    if coid:
+        _recent[coid] = (time.time(), result)
+```
+
+Reason codes para idempotency:
+
+```json
+{"ok": true, "ticket": 123456789, "filled_at": 1.08502, "idempotent_replay": true}
+```
+
+## Sync hook al dashboard
+
+Después de cada `place_order` exitoso o cada cierre detectado por el poller,
+POST al backend `/api/journal` con `client_id = "mt5-deal-<ticket>"`. Ver
+`docs/07-MT5-SYNC.md`.
 
 ---
 
@@ -205,15 +284,26 @@ Precio actual con bid/ask/spread.
 - `sl` (float) — **obligatorio**
 - `tp` (float) — **obligatorio**
 - `comment` (str, default `"claude"`)
+- `client_order_id` (str, opcional pero **fuertemente recomendado**) — UUID generado por Claude. Permite reintentos seguros.
 
 **Pre-checks (en orden):**
 ```python
-def place_order(symbol, side, lots, sl, tp, comment):
-    log_attempt({"symbol": symbol, "side": side, "lots": lots, ...})
+def place_order(symbol, side, lots, sl, tp, comment, client_order_id=None):
+    # CHECK 0: kill-switch (antes de cualquier otra cosa)
+    if halt.is_halted():
+        return reject("HALTED", halt.reason() or "kill-switch active")
+
+    # CHECK 0.5: idempotency
+    cached = _check_idempotency(client_order_id)
+    if cached is not None:
+        return {**cached, "idempotent_replay": True}
+
+    log_attempt({"client_order_id": client_order_id, "symbol": symbol,
+                 "side": side, "lots": lots, "mode": MODE, ...})
 
     # CHECK 1: SL & TP requeridos
     if sl is None or tp is None:
-        return reject("SL_TP_REQUIRED", "SL y TP obligatorios")
+        return _remember(client_order_id, reject("SL_TP_REQUIRED", "SL y TP obligatorios"))
 
     # CHECK 2: hora permitida
     hour = datetime.now(timezone.utc).hour
@@ -258,7 +348,17 @@ def place_order(symbol, side, lots, sl, tp, comment):
     if risk_usd > max_risk_usd * 1.05:  # 5% tolerancia por redondeo
         return reject("RISK_EXCEEDED", f"${risk_usd:.2f} > ${max_risk_usd:.2f}")
 
-    # ENVÍO REAL
+    # MODE switch: paper vs real
+    if MODE == "paper":
+        ticket = int(time.time() * 1000)
+        result = {"ok": True, "ticket": ticket, "filled_at": entry, "mode": "paper"}
+        log_paper({"client_order_id": client_order_id, "symbol": symbol,
+                   "side": side, "lots": lots, "sl": sl, "tp": tp,
+                   "ticket": ticket, "mode": "paper"})
+        sync_to_dashboard(symbol, side, lots, entry, sl, tp, ticket, source="paper")
+        return _remember(client_order_id, result)
+
+    # ENVÍO REAL (demo o live)
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -268,15 +368,17 @@ def place_order(symbol, side, lots, sl, tp, comment):
         "sl": sl,
         "tp": tp,
         "deviation": 20,
-        "magic": 20260115,
-        "comment": comment[:31],
+        "magic": MT5_MAGIC,        # de env, único por deploy
+        "comment": (client_order_id or comment)[:31],
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
     result = mt5.order_send(request)
     log_result(result)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        return reject("MT5_REJECTED", f"retcode={result.retcode}: {result.comment}")
-    return {"ok": True, "ticket": result.order, "filled_at": result.price}
+        return _remember(client_order_id,
+                         reject("MT5_REJECTED", f"retcode={result.retcode}: {result.comment}"))
+    success = {"ok": True, "ticket": result.order, "filled_at": result.price, "mode": MODE}
+    return _remember(client_order_id, success)
 ```
 
 **Returns (success):**
@@ -409,13 +511,18 @@ Cambios:
 
 ## Checklist de validación
 
-- [ ] Conecta a DEMO sin errores
-- [ ] Las 7 guardas rechazan correctamente (test cada una con caso adversarial)
+- [ ] Conecta a DEMO sin errores (con `TRADING_MODE=demo`)
+- [ ] `TRADING_MODE=paper` por default, todas las guardas corren, MT5 nunca recibe `order_send`
+- [ ] Kill-switch (`~/mcp/.HALT`) bloquea antes que cualquier otra guarda
+- [ ] Las 8 guardas rechazan correctamente (test cada una con caso adversarial)
+- [ ] Mismo `client_order_id` dentro de 60s → mismo ticket, sin doble envío
 - [ ] `modify_sl_tp` rechaza alejar SL
-- [ ] `orders.jsonl` registra cada intento
-- [ ] Usa `magic` number único (para diferenciar trades del MCP de otros)
+- [ ] `orders.jsonl` y `paper_orders.jsonl` registran cada intento
+- [ ] Usa `magic` number único (env `MT5_MAGIC`)
+- [ ] Sync poller empuja deals cerrados al dashboard con `client_id="mt5-deal-<ticket>"`
+- [ ] `_shared/rules.py` es la única fuente de constantes (no hay copy-paste local)
 - [ ] `.env` excluido de git
-- [ ] Tests automáticos en `tests/test_guards.py` pasan en CI o local
+- [ ] Tests automáticos pasan: `test_guards.py`, `test_idempotency.py`, `test_kill_switch.py`, `test_paper_mode.py`, `test_sync.py`
 
 ---
 

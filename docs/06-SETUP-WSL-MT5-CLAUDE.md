@@ -14,6 +14,32 @@
 | Suscripción Claude | Pro Max ($200/mo) | (necesario para MCPs) |
 | Editor | VSCode | VSCode + WSL extension |
 
+> **Atajo si ya tienes WSL2 + MT5 instalados y logueados**: salta a *Pre-flight
+> check* abajo y luego ve directo al **Paso 5** (estructura de carpetas). Los
+> Pasos 1–3 son la primera vez en una máquina limpia. Lo que sigue revalida
+> rápido.
+
+### Pre-flight check (3 minutos)
+
+Si crees que ya tienes el entorno listo, corre esto antes de cualquier cosa:
+
+```powershell
+# PowerShell normal
+wsl --status                      # debe decir Ubuntu-22.04, Default Version 2
+where.exe python                  # debe imprimir el python.exe de Windows nativo
+python -c "import MetaTrader5 as mt5; print(mt5.initialize()); print(mt5.version()); mt5.shutdown()"
+# → True + (build, año) significa que MT5 está corriendo y la lib se conecta
+
+# Dentro de WSL (Ubuntu)
+wsl
+python3 --version                 # 3.11.x
+python3 -c "import sys; print(sys.version)"
+exit
+```
+
+Si los 4 comandos pasan: ya tienes lo que los Pasos 1–3 montan. Salta al Paso 4
+o 5.
+
 ---
 
 ## Paso 1 — Habilitar WSL2 + Ubuntu 22.04
@@ -130,44 +156,52 @@ Si no aparece: actualiza Claude Desktop a la última versión.
 $base = "$env:USERPROFILE\mcp"
 mkdir $base
 cd $base
-mkdir news-mcp, trading-mt5-mcp, analysis-mcp, risk-mcp, logs
+mkdir _shared, news-mcp, trading-mt5-mcp, analysis-mcp, risk-mcp, logs
 
 # Verifica
 ls
-# news-mcp  trading-mt5-mcp  analysis-mcp  risk-mcp  logs
+# _shared  news-mcp  trading-mt5-mcp  analysis-mcp  risk-mcp  logs
+```
+
+`_shared/` aloja `rules.py` y `halt.py` — el módulo compartido entre los 4
+MCPs. Ver `docs/09-SHARED-RULES.md` y `docs/10-KILL-SWITCH.md`.
+
+⚠️ **Importante**: cada MCP arranca con `~/mcp/_shared` insertado en su
+`PYTHONPATH`. La forma más limpia: una primera línea en `server.py`:
+
+```python
+import sys, os
+sys.path.insert(0, os.path.expanduser("~/mcp/_shared"))
+from rules import MIN_RR, MAX_RISK_PER_TRADE_PCT  # etc
 ```
 
 ---
 
-## Paso 6 — Construir cada MCP con Claude Code
+## Paso 6 — Construir cada MCP con Claude (siguiendo `BUILD_PLAN.md`)
 
-### 6.1 Abre Claude Desktop
-Inicia una conversación nueva.
+La forma recomendada **NO** es copy-paste por MCP. Es:
 
-### 6.2 Para cada MCP (4 en total):
+1. Clona este repo en WSL: `git clone … ~/bot-claude-max`.
+2. Abre Claude Code en la carpeta: `cd ~/bot-claude-max && claude` (o desde tu
+   IDE).
+3. Pídele: *"Lee `CLAUDE.md` y ejecuta `BUILD_PLAN.md` desde la fase 0"*.
 
-1. Abre el dashboard web → sección **MCP Stack**.
-2. Click en **"Copy Prompt"** del MCP_01 (News).
-3. En Claude Desktop pega:
-   ```
-   Vas a crear un MCP server. Crea estos archivos en mi máquina,
-   yo los voy a copiar a C:\Users\<usuario>\mcp\news-mcp\:
+Claude leerá los docs `docs/00..10` en el orden correcto, materializará los
+4 MCPs y el módulo `_shared` con sus tests, y se detendrá entre fases para
+verificación. Si en algún momento te quedas sin sesión, abre otra y dile
+*"continúa `BUILD_PLAN.md` desde la fase N"*. Cada fase es self-contained.
 
-   [PEGA EL PROMPT COMPLETO AQUÍ]
-   ```
-4. Claude generará:
-   - `server.py`
-   - `requirements.txt`
-   - `.env.example`
-   - posiblemente librerías auxiliares en `lib/`
+### Si prefieres construirlo manual (no recomendado pero posible):
 
-5. Copia los archivos a `C:\Users\<usuario>\mcp\news-mcp\`.
-6. Crea `.env` (a partir de `.env.example`) con tus keys reales.
-
-### 6.3 Repite para los otros 3:
-- MCP_02 (Trading-MT5) → `trading-mt5-mcp/`
-- MCP_03 (Analysis) → `analysis-mcp/`
-- MCP_04 (Risk) → `risk-mcp/`
+1. Lee primero `docs/09-SHARED-RULES.md` y crea `~/mcp/_shared/rules.py` +
+   `~/mcp/_shared/halt.py` con sus tests.
+2. Lee `docs/04-MCP-RISK.md` y crea `~/mcp/risk-mcp/` (no toca red ni MT5,
+   más fácil para validar tu entorno).
+3. Lee `docs/03-MCP-ANALYSIS.md` y crea `~/mcp/analysis-mcp/` (puro compute).
+4. Lee `docs/01-MCP-NEWS.md` y crea `~/mcp/news-mcp/`.
+5. **Último**: `docs/02-MCP-TRADING.md` → `~/mcp/trading-mt5-mcp/`. **Empieza
+   con `TRADING_MODE=paper`**. Solo cuando los 5 tests del Paso 8 pasen,
+   cambia a `demo`.
 
 ### 6.4 Instala dependencias por cada MCP
 
@@ -210,46 +244,62 @@ En PowerShell:
 notepad $env:APPDATA\Claude\claude_desktop_config.json
 ```
 
-### 7.2 Contenido
-Reemplaza `<USUARIO>` por tu nombre real y rellena las API keys:
+### 7.2 Contenido (3 MCPs en WSL + 1 en Windows nativo)
+
+Los MCPs `news`, `analysis` y `risk` corren en WSL — Claude Desktop los lanza
+con `wsl python ...`. El MCP `trading` corre en Windows nativo porque la
+librería `MetaTrader5` solo existe para Windows.
+
+Reemplaza `<USUARIO_WIN>` por tu usuario Windows y `<USUARIO_WSL>` por tu
+usuario en Ubuntu (suelen ser distintos):
 
 ```json
 {
   "mcpServers": {
     "news": {
-      "command": "python",
-      "args": ["C:\\Users\\<USUARIO>\\mcp\\news-mcp\\server.py"],
+      "command": "wsl",
+      "args": ["python3", "/home/<USUARIO_WSL>/mcp/news-mcp/server.py"],
       "env": {
         "FINNHUB_API_KEY": "ckxxxxxxxxxxxxxx",
         "NEWSAPI_KEY": "xxxxxxxxxxxxxxxxxxxx"
       }
     },
     "trading": {
-      "command": "C:\\Users\\<USUARIO>\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
-      "args": ["C:\\Users\\<USUARIO>\\mcp\\trading-mt5-mcp\\server.py"],
+      "command": "C:\\Users\\<USUARIO_WIN>\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+      "args": ["C:\\Users\\<USUARIO_WIN>\\mcp\\trading-mt5-mcp\\server.py"],
       "env": {
         "MT5_LOGIN": "12345678",
         "MT5_PASSWORD": "tu_password_demo",
-        "MT5_SERVER": "Pepperstone-Demo"
+        "MT5_SERVER": "Pepperstone-Demo",
+        "TRADING_MODE": "paper",
+        "MT5_MAGIC": "20260427",
+        "HALT_FILE": "C:\\Users\\<USUARIO_WIN>\\mcp\\.HALT",
+        "DASHBOARD_URL": "http://localhost:8000",
+        "DASHBOARD_TOKEN": "<paste backend DASHBOARD_TOKEN>"
       }
     },
     "analysis": {
-      "command": "python",
-      "args": ["C:\\Users\\<USUARIO>\\mcp\\analysis-mcp\\server.py"]
+      "command": "wsl",
+      "args": ["python3", "/home/<USUARIO_WSL>/mcp/analysis-mcp/server.py"]
     },
     "risk": {
-      "command": "python",
-      "args": ["C:\\Users\\<USUARIO>\\mcp\\risk-mcp\\server.py"],
+      "command": "wsl",
+      "args": ["python3", "/home/<USUARIO_WSL>/mcp/risk-mcp/server.py"],
       "env": {
         "STARTING_BALANCE": "800",
-        "MAX_RISK_PER_TRADE_PCT": "1.0",
-        "MAX_DAILY_LOSS_PCT": "3.0",
-        "STATE_FILE": "C:\\Users\\<USUARIO>\\mcp\\risk-mcp\\state.json"
+        "STATE_FILE": "/home/<USUARIO_WSL>/mcp/risk-mcp/state.json"
       }
     }
   }
 }
 ```
+
+⚠️ Nota sobre `_shared`: como `news`, `analysis` y `risk` corren en WSL, todos
+ven el mismo `~/mcp/_shared/` (path WSL). El `trading` corre en Windows
+nativo y necesita su propia copia de `_shared` en
+`C:\Users\<USUARIO_WIN>\mcp\_shared\` (idéntico contenido). Una alternativa
+es montar `\\wsl$\Ubuntu\home\<USUARIO_WSL>\mcp\_shared` como path en
+Windows, pero el copy es más simple y no añade dependencia de runtime.
 
 ⚠️ **Path al python.exe del trading-mcp**: si lo apuntas al de WSL, fallará. Apunta al de Windows nativo (`C:\Users\<usuario>\AppData\Local\Programs\Python\Python311\python.exe`).
 
@@ -345,31 +395,31 @@ Claude: trading.place_order(...) → ticket 123...
 
 ## Paso 10 — Migración a cuenta REAL ($800)
 
-Solo después de pasar Paso 9. Acciones:
+Solo después de pasar Paso 9 + adherencia ≥ 95% en últimos 30 trades. Acciones:
 
 ### 10.1 Abre cuenta real con el mismo broker
 Deposita $800.
 
-### 10.2 Cambia credenciales en `claude_desktop_config.json`
+### 10.2 Cambia credenciales y modo en `claude_desktop_config.json`
 ```json
 "trading": {
   "env": {
-    "MT5_LOGIN": "tu_cuenta_REAL",
-    "MT5_PASSWORD": "tu_password_real",
-    "MT5_SERVER": "Pepperstone-Live01"  // server REAL, no Demo
+    "MT5_LOGIN":   "tu_cuenta_REAL",
+    "MT5_PASSWORD":"tu_password_real",
+    "MT5_SERVER":  "Pepperstone-Live01",
+    "TRADING_MODE":"live"
   }
 }
 ```
 
 ### 10.3 Reduce riesgo TEMPORALMENTE a 0.5%
-Edita `trading-mt5-mcp/server.py`:
+Edita `~/mcp/_shared/rules.py` (única copia, todos los MCPs lo ven):
 ```python
 MAX_RISK_PER_TRADE_PCT = 0.5  # primera semana real
+__version__ = "1.1.0"
 ```
-Y `risk-mcp` env:
-```
-MAX_RISK_PER_TRADE_PCT=0.5
-```
+Bumpear `__version__` deja constancia. Tras 7 días limpios, vuelve a `1.0` y
+sube a `__version__ = "1.2.0"`.
 
 ### 10.4 Reinicia Claude Desktop.
 
@@ -471,13 +521,20 @@ Si en el primer mes real haces < $200, el sistema te está costando dinero neto.
 - [ ] MT5 instalado, demo logueada, "Allow algo trading" ✅
 - [ ] Test `mt5.initialize()` retorna `True`
 - [ ] Claude Desktop instalado con cuenta Pro Max
-- [ ] 4 carpetas creadas en `~/mcp/`
-- [ ] 4 MCPs construidos con Claude Code y testeados standalone
-- [ ] `claude_desktop_config.json` con 4 mcpServers
+- [ ] Repo clonado en `~/bot-claude-max` (WSL) y leído `CLAUDE.md`
+- [ ] `~/mcp/_shared/` con `rules.py` y `halt.py` (tests pasan)
+- [ ] Backend dashboard corre con `DASHBOARD_TOKEN` configurado, bind a 127.0.0.1
+- [ ] Frontend dashboard corre con `REACT_APP_DASHBOARD_TOKEN` que matchea
+- [ ] 4 MCPs construidos siguiendo `BUILD_PLAN.md` y testeados standalone
+- [ ] `trading-mt5-mcp` arranca en `TRADING_MODE=paper` y nunca llama `mt5.order_send` en ese modo
+- [ ] Kill-switch test: `touch ~/mcp/.HALT` → `place_order` retorna `HALTED`
+- [ ] Idempotency test: mismo `client_order_id` 2x → mismo ticket
+- [ ] `claude_desktop_config.json` con 4 mcpServers (3 WSL + 1 Windows)
 - [ ] Claude Desktop ve los 4 MCPs (icono inferior)
-- [ ] 5 tests del Paso 8 pasan
+- [ ] 5 tests del Paso 8 pasan en paper mode
+- [ ] Sync: deal cerrado en MT5 aparece en dashboard journal con `source: "mt5-sync"` (o `"paper"`)
 - [ ] API keys de Finnhub y NewsAPI obtenidas
-- [ ] Periodo demo iniciado, primer trade documentado en dashboard
+- [ ] Adherencia inicial 100% (sin trades aún)
 - [ ] Backup semanal programado
 
 Listo. Bienvenido a la operación asistida. **Que la disciplina te acompañe.**
