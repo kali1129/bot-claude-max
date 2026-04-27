@@ -90,12 +90,16 @@ python-dotenv>=1.0.1
 
 | Var | Default | Descripción |
 |---|---|---|
-| `STARTING_BALANCE` | `800` | Solo se usa la primera vez |
-| `MAX_RISK_PER_TRADE_PCT` | `1.0` | Default para `calc_position_size` |
-| `MAX_DAILY_LOSS_PCT` | `3.0` | Threshold de halt diario |
-| `MAX_CONSECUTIVE_LOSSES` | `3` | Después de N en línea, halt |
-| `MAX_TRADES_PER_DAY` | `5` | Anti-overtrading |
-| `STATE_FILE` | `./state.json` | Path del state |
+| `STARTING_BALANCE` | `800` | Solo se usa la primera vez (state inicial) |
+| `STATE_FILE` | `~/mcp/risk-mcp/state.json` | Path del state |
+| `DEALS_FILE` | `~/mcp/risk-mcp/deals.jsonl` | Append-only history |
+| `LOG_LEVEL` | `INFO` | logging |
+
+⚠️ **No se exponen como env**: `MAX_RISK_PER_TRADE_PCT`, `MAX_DAILY_LOSS_PCT`,
+`MAX_CONSECUTIVE_LOSSES`, `MAX_TRADES_PER_DAY`, `MIN_RR`. Esos viven en
+`~/mcp/_shared/rules.py` (ver `docs/09-SHARED-RULES.md`). El propósito es que
+no puedas relajarlos vía environment override sin que quede registrado en el
+módulo compartido.
 
 ---
 
@@ -103,6 +107,7 @@ python-dotenv>=1.0.1
 
 ```json
 {
+  "_schema_version": 1,
   "starting_balance_today": 800.0,
   "current_equity": 802.50,
   "deals_today": [
@@ -111,14 +116,16 @@ python-dotenv>=1.0.1
       "symbol": "EURUSD",
       "side": "buy",
       "profit": -8.0,
-      "r_multiple": -1.0
+      "r_multiple": -1.0,
+      "deal_ticket": 123456789
     },
     {
       "ts": "2026-01-15T11:45:00Z",
       "symbol": "XAUUSD",
       "side": "sell",
       "profit": 18.5,
-      "r_multiple": 2.3
+      "r_multiple": 2.3,
+      "deal_ticket": 123456790
     }
   ],
   "consecutive_losses": 0,
@@ -126,6 +133,34 @@ python-dotenv>=1.0.1
   "last_reset_date": "2026-01-15"
 }
 ```
+
+**Migration policy** (`_schema_version`):
+
+```python
+CURRENT_SCHEMA_VERSION = 1
+
+def load_state() -> dict:
+    if not os.path.exists(STATE_FILE):
+        return _new_state()
+    with open(STATE_FILE) as f:
+        s = json.load(f)
+    v = s.get("_schema_version", 0)
+    if v < CURRENT_SCHEMA_VERSION:
+        s = _migrate(s, from_v=v)
+        save_state(s)
+    return s
+
+def _migrate(s: dict, from_v: int) -> dict:
+    if from_v == 0:                       # legacy → 1: añadir _schema_version y deal_ticket
+        s["_schema_version"] = 1
+        for d in s.get("deals_today", []):
+            d.setdefault("deal_ticket", None)
+    return s
+```
+
+`register_trade` también acepta un `deal_ticket` opcional (de MT5) para
+**idempotency**: si un deal ya está registrado por ticket, devuelve el state
+sin alterar.
 
 ### Persistencia atómica
 
@@ -279,19 +314,31 @@ def should_stop_trading() -> dict:
     }
 ```
 
-### 4. `register_trade(profit, r_multiple, symbol, side) → dict`
+### 4. `register_trade(profit, r_multiple, symbol, side, deal_ticket=None) → dict`
 
-Llamado **después** de cerrar una posición. Actualiza state.
+Llamado **después** de cerrar una posición. Actualiza state. **Idempotente**
+sobre `deal_ticket`: si ya existe en `deals_today` o en `deals.jsonl` del día,
+no duplica.
 
 ```python
-def register_trade(profit: float, r_multiple: float, symbol: str, side: str) -> dict:
+def register_trade(profit: float, r_multiple: float, symbol: str, side: str,
+                   deal_ticket: int | None = None) -> dict:
     state = maybe_reset_day(load_state())
+
+    # Idempotency: skip if ticket already known.
+    if deal_ticket is not None:
+        for d in state["deals_today"]:
+            if d.get("deal_ticket") == deal_ticket:
+                return {"registered": False, "reason": "DUPLICATE_TICKET",
+                        "current_equity": state["current_equity"]}
+
     deal = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "symbol": symbol,
         "side": side,
         "profit": profit,
         "r_multiple": r_multiple,
+        "deal_ticket": deal_ticket,
     }
     state["deals_today"].append(deal)
     state["current_equity"] += profit
@@ -357,6 +404,14 @@ import logging
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+
+# Shared invariants (single source of truth across MCPs)
+sys.path.insert(0, os.path.expanduser("~/mcp/_shared"))
+from rules import (
+    MAX_RISK_PER_TRADE_PCT, MAX_DAILY_LOSS_PCT,
+    MAX_CONSECUTIVE_LOSSES, MAX_TRADES_PER_DAY,
+    MIN_RR, is_blocked_hour, max_risk_dollars,
+)
 
 from lib.state_manager import load_state, save_state
 from lib.day_reset import maybe_reset_day
@@ -527,11 +582,16 @@ Si quieres añadir features, primero pregúntate: **¿esto refuerza la disciplin
 
 ## Checklist de validación
 
-- [ ] `state.json` se crea al primer run con valores default
+- [ ] `state.json` se crea al primer run con `_schema_version=1` y valores default
+- [ ] Migración de state v0→v1 corre sin perder data
 - [ ] Auto-reset funciona al cambiar de día UTC
 - [ ] `should_stop_trading` devuelve `true` con `consecutive_losses=3`
 - [ ] `register_trade` con profit<0 incrementa streak; con profit>0 lo resetea
-- [ ] `calc_position_size` con risk_pct=2 devuelve warning
+- [ ] `register_trade` con `deal_ticket` ya conocido devuelve `DUPLICATE_TICKET`, no duplica
+- [ ] `calc_position_size` devuelve `lots=0` cuando el riesgo solicitado es menor que el min_lot (no flooring silencioso)
+- [ ] `calc_position_size` con risk_pct=2 devuelve warning de violación de regla
 - [ ] Lockout persiste tras reinicio del MCP
 - [ ] `expectancy(30)` calcula correctamente con fixture de 30 deals
+- [ ] Property tests con `hypothesis` para sizing pasan (≥1000 ejemplos)
+- [ ] Importa constantes desde `~/mcp/_shared/rules.py`, no las redefine
 - [ ] No requiere conexión a internet ni a MT5

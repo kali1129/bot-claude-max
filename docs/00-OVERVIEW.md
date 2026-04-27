@@ -166,6 +166,37 @@ Cada MCP tiene su `__version__` en el header de `server.py`. Lo reportamos como 
 | **04-MCP-RISK.md** | Guía completa del MCP Guardian (Risk) |
 | **05-DASHBOARD.md** | El dashboard web que estás viendo |
 | **06-SETUP-WSL-MT5-CLAUDE.md** | Setup completo paso a paso |
+| **07-MT5-SYNC.md** | Sync MT5 → journal con idempotency |
+| **08-DISCIPLINE-METRICS.md** | Adherencia a reglas como métrica primaria |
+| **09-SHARED-RULES.md** | Módulo único `~/mcp/_shared/rules.py` |
+| **10-KILL-SWITCH.md** | `~/mcp/.HALT` + modos paper/demo/live |
+
+## Capas transversales (no son MCPs, son infraestructura compartida)
+
+```
+~/mcp/_shared/                ← un solo lugar para constantes
+├── rules.py                  ← MIN_RR, MAX_RISK_PER_TRADE_PCT, …
+└── halt.py                   ← is_halted(), halt(), resume()
+```
+
+Cada MCP importa de aquí. Nadie redefine constantes localmente. Nadie hace
+copy-paste de la lógica de blackout-hour. Si una regla cambia, cambia en un
+solo lugar y todos los MCPs lo ven al reiniciar Claude Desktop.
+
+## Garantías cross-MCP que el sistema preserva
+
+- **Idempotency end-to-end**. `place_order` recibe `client_order_id`. El sync
+  poller manda `client_id="mt5-deal-<ticket>"` al journal. El backend tiene
+  `unique` index en ambos campos. **Ningún reintento crea un duplicado.**
+- **Kill-switch precede toda guarda**. Antes de checar R:R, lots, dd, hora,
+  el `trading-mcp` lee `~/mcp/.HALT`. Si existe → reject inmediato.
+- **Modo por defecto = paper**. Cualquier cambio al `trading-mcp` se prueba
+  en paper. Pasar a demo o live es un cambio de `.env` explícito + restart.
+- **Una sola fuente de verdad de equity**. MT5 → trading-mcp sync → backend
+  journal → dashboard. El usuario nunca tipea trades.
+- **Auth en endpoints de escritura**. El backend exige `Authorization: Bearer`
+  para POST/PUT/DELETE en journal y checklist. El sync poller lo manda.
+  Bind a `127.0.0.1`.
 
 ---
 

@@ -1,28 +1,39 @@
-from fastapi import FastAPI, APIRouter, HTTPException
-from fastapi.responses import PlainTextResponse
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
+"""Futures Trading Plan Dashboard — FastAPI backend.
+
+Single-process API for the operations center: serves the static plan content,
+the architecture docs, the trade journal, the daily checklist, the risk
+calculator, and the live discipline-adherence score. The trade journal is
+read-mostly: write endpoints expect an idempotency key (``client_id``) so the
+MT5 sync poller can retry safely without duplicating records.
+"""
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Literal
+from typing import List, Literal, Optional
+import logging
+import os
+import secrets
 import uuid
-from datetime import datetime, timezone, date
+
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from fastapi.responses import PlainTextResponse
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.middleware.cors import CORSMiddleware
 
 from plan_content import (
     CAPITAL,
-    MAX_RISK_PER_TRADE_PCT,
-    MAX_DAILY_LOSS_PCT,
-    MAX_CONSECUTIVE_LOSSES,
-    MIN_RR,
-    MCPS,
-    STRATEGIES,
-    STRICT_RULES,
     CHECKLIST_TEMPLATE,
+    MAX_CONSECUTIVE_LOSSES,
+    MAX_DAILY_LOSS_PCT,
+    MAX_RISK_PER_TRADE_PCT,
+    MCPS,
+    MIN_RR,
     MINDSET_PRINCIPLES,
     SETUP_GUIDE,
+    STRATEGIES,
+    STRICT_RULES,
     build_markdown,
 )
 
@@ -30,76 +41,135 @@ from plan_content import (
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+log = logging.getLogger("trading-dashboard")
 
-app = FastAPI(title="Futures Trading Plan Dashboard")
+
+# ============ APP STATE ============
+
+class _State:
+    mongo_client: Optional[AsyncIOMotorClient] = None
+    db = None
+
+
+state = _State()
+
+
+def get_db():
+    """Resolve the active Mongo database. Tests override via ``app.dependency_overrides``."""
+    if state.db is None:
+        raise RuntimeError("database not initialised — lifespan did not run")
+    return state.db
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    mongo_url = os.environ.get("MONGO_URL")
+    db_name = os.environ.get("DB_NAME", "trading_dashboard")
+    if not mongo_url:
+        log.warning("MONGO_URL not set — running without DB (tests should override get_db)")
+    else:
+        state.mongo_client = AsyncIOMotorClient(mongo_url)
+        state.db = state.mongo_client[db_name]
+        await state.db.trades.create_index("id", unique=True)
+        await state.db.trades.create_index("client_id", unique=True, sparse=True)
+        await state.db.checklists.create_index("date", unique=True)
+        log.info("connected to mongo db=%s", db_name)
+    yield
+    if state.mongo_client is not None:
+        state.mongo_client.close()
+        log.info("mongo connection closed")
+
+
+app = FastAPI(title="Futures Trading Plan Dashboard", lifespan=lifespan)
 api_router = APIRouter(prefix="/api")
+
+
+# ============ AUTH ============
+# Single-tenant local dashboard: optional bearer token on write endpoints.
+# Set DASHBOARD_TOKEN in .env to enable. Empty/unset → auth disabled (dev mode).
+
+DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "").strip()
+
+
+def require_token(authorization: Optional[str] = Header(default=None)):
+    if not DASHBOARD_TOKEN:
+        return
+    expected = f"Bearer {DASHBOARD_TOKEN}"
+    if not authorization or not secrets.compare_digest(authorization, expected):
+        raise HTTPException(401, "missing or invalid bearer token")
 
 
 # ============ MODELS ============
 
-class TradeEntry(BaseModel):
+TradeStatus = Literal["open", "closed-win", "closed-loss", "closed-be"]
+
+
+class TradeBase(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    date: str  # YYYY-MM-DD
-    symbol: str
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    symbol: str = Field(min_length=1, max_length=32)
     side: Literal["buy", "sell"]
-    strategy: str
-    entry: float
-    exit: Optional[float] = None
-    sl: float
-    tp: Optional[float] = None
-    lots: float
+    strategy: str = Field(min_length=1, max_length=64)
+    entry: float = Field(gt=0)
+    exit: Optional[float] = Field(default=None, gt=0)
+    sl: float = Field(gt=0)
+    tp: Optional[float] = Field(default=None, gt=0)
+    lots: float = Field(gt=0, le=10)
     pnl_usd: float = 0.0
     r_multiple: float = 0.0
-    status: Literal["open", "closed-win", "closed-loss", "closed-be"] = "open"
-    notes: str = ""
+    status: TradeStatus = "open"
+    notes: str = Field(default="", max_length=2000)
+
+
+class TradeEntry(TradeBase):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    client_id: Optional[str] = None
+    source: Literal["manual", "mt5-sync"] = "manual"
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
-class TradeEntryCreate(BaseModel):
-    date: str
-    symbol: str
-    side: Literal["buy", "sell"]
-    strategy: str
-    entry: float
-    exit: Optional[float] = None
-    sl: float
-    tp: Optional[float] = None
-    lots: float
-    pnl_usd: float = 0.0
-    r_multiple: float = 0.0
-    status: Literal["open", "closed-win", "closed-loss", "closed-be"] = "open"
-    notes: str = ""
+class TradeEntryCreate(TradeBase):
+    client_id: Optional[str] = Field(default=None, max_length=64)
+    source: Literal["manual", "mt5-sync"] = "manual"
 
 
 class ChecklistState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    date: str  # YYYY-MM-DD
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     checked_ids: List[str] = []
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ChecklistUpdate(BaseModel):
-    date: str
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     checked_ids: List[str]
 
 
 class RiskCalcInput(BaseModel):
-    balance: float
-    risk_pct: float
-    entry: float
-    stop_loss: float
-    pip_value: float = 10.0  # USD por pip por lote estándar (forex majors ~$10)
-    pip_size: float = 0.0001  # 0.0001 forex, 0.01 JPY, 0.1 oro, 1.0 índices
-    lot_step: float = 0.01
-    min_lot: float = 0.01
-    max_lot: float = 0.5
+    balance: float = Field(gt=0, le=10_000_000)
+    risk_pct: float = Field(gt=0, le=100)
+    entry: float = Field(gt=0)
+    stop_loss: float = Field(gt=0)
+    pip_value: float = Field(default=10.0, gt=0)
+    pip_size: float = Field(default=0.0001, gt=0)
+    lot_step: float = Field(default=0.01, gt=0)
+    min_lot: float = Field(default=0.01, gt=0)
+    max_lot: float = Field(default=0.5, gt=0)
+
+    @model_validator(mode="after")
+    def _validate(self):
+        if self.entry == self.stop_loss:
+            raise ValueError("entry y stop_loss no pueden ser iguales")
+        if self.min_lot > self.max_lot:
+            raise ValueError("min_lot > max_lot")
+        return self
 
 
 # ============ ENDPOINTS ============
@@ -107,6 +177,12 @@ class RiskCalcInput(BaseModel):
 @api_router.get("/")
 async def root():
     return {"message": "Trading Plan API", "capital": CAPITAL}
+
+
+@api_router.get("/health")
+async def health():
+    db_ok = state.db is not None
+    return {"ok": True, "db": db_ok, "auth": bool(DASHBOARD_TOKEN)}
 
 
 @api_router.get("/plan/data")
@@ -145,6 +221,10 @@ DOCS_META = [
     {"id": "04-mcp-risk", "file": "04-MCP-RISK.md", "title": "MCP de Gestión de Riesgo", "kind": "mcp", "order": 4},
     {"id": "05-dashboard", "file": "05-DASHBOARD.md", "title": "Dashboard Web (este sitio)", "kind": "system", "order": 5},
     {"id": "06-setup", "file": "06-SETUP-WSL-MT5-CLAUDE.md", "title": "Setup completo WSL + MT5 + Claude", "kind": "guide", "order": 6},
+    {"id": "07-mt5-sync", "file": "07-MT5-SYNC.md", "title": "MT5 → Journal Sync", "kind": "system", "order": 7},
+    {"id": "08-discipline", "file": "08-DISCIPLINE-METRICS.md", "title": "Métricas de adherencia", "kind": "system", "order": 8},
+    {"id": "09-shared-rules", "file": "09-SHARED-RULES.md", "title": "Módulo de reglas compartidas", "kind": "system", "order": 9},
+    {"id": "10-kill-switch", "file": "10-KILL-SWITCH.md", "title": "Kill-switch y modos de trading", "kind": "system", "order": 10},
 ]
 
 
@@ -171,21 +251,38 @@ async def get_doc(doc_id: str):
 
 # ----- Trade Journal -----
 
-@api_router.post("/journal", response_model=TradeEntry)
-async def create_trade(trade: TradeEntryCreate):
-    obj = TradeEntry(**trade.model_dump())
+@api_router.post("/journal", response_model=TradeEntry, dependencies=[Depends(require_token)])
+async def create_trade(payload: TradeEntryCreate, db=Depends(get_db)):
+    if payload.client_id:
+        existing = await db.trades.find_one({"client_id": payload.client_id}, {"_id": 0})
+        if existing:
+            return existing
+    obj = TradeEntry(**payload.model_dump())
     await db.trades.insert_one(obj.model_dump())
     return obj
 
 
 @api_router.get("/journal", response_model=List[TradeEntry])
-async def list_trades(limit: int = 200):
+async def list_trades(limit: int = 200, db=Depends(get_db)):
     items = await db.trades.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return items
 
 
-@api_router.delete("/journal/{trade_id}")
-async def delete_trade(trade_id: str):
+@api_router.put("/journal/{trade_id}", response_model=TradeEntry, dependencies=[Depends(require_token)])
+async def update_trade(trade_id: str, payload: TradeEntryCreate, db=Depends(get_db)):
+    existing = await db.trades.find_one({"id": trade_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "trade not found")
+    merged = {**existing, **payload.model_dump(exclude_none=True)}
+    obj = TradeEntry(**merged)
+    obj_dict = obj.model_dump()
+    obj_dict["id"] = trade_id
+    await db.trades.update_one({"id": trade_id}, {"$set": obj_dict})
+    return obj_dict
+
+
+@api_router.delete("/journal/{trade_id}", dependencies=[Depends(require_token)])
+async def delete_trade(trade_id: str, db=Depends(get_db)):
     res = await db.trades.delete_one({"id": trade_id})
     if res.deleted_count == 0:
         raise HTTPException(404, "trade not found")
@@ -193,7 +290,7 @@ async def delete_trade(trade_id: str):
 
 
 @api_router.get("/journal/stats")
-async def journal_stats():
+async def journal_stats(db=Depends(get_db)):
     items = await db.trades.find({}, {"_id": 0}).to_list(1000)
     closed = [t for t in items if t["status"] != "open"]
     total = len(closed)
@@ -209,7 +306,6 @@ async def journal_stats():
         if total else 0.0
     )
 
-    # Equity curve (ordered by created_at asc)
     closed_sorted = sorted(closed, key=lambda t: t["created_at"])
     equity = []
     running = CAPITAL
@@ -222,7 +318,6 @@ async def journal_stats():
             "symbol": t["symbol"],
         })
 
-    # Today's stats
     today_str = date.today().isoformat()
     today_trades = [t for t in items if t["date"] == today_str]
     today_closed = [t for t in today_trades if t["status"] != "open"]
@@ -264,18 +359,42 @@ async def journal_stats():
     }
 
 
+# ----- Discipline adherence -----
+
+@api_router.get("/discipline/score")
+async def discipline_score(db=Depends(get_db)):
+    """Adherence score: percentage of closed trades that obey hard rules.
+
+    Penalises: r_multiple < -1.0 (sl runaway), risk > MAX_RISK_PER_TRADE_PCT
+    (inferred via lots * sl distance vs balance — proxy: r_multiple of losers
+    must be ≥ -1.05). Rule-of-thumb metric, not authoritative.
+    """
+    items = await db.trades.find({}, {"_id": 0}).to_list(2000)
+    closed = [t for t in items if t["status"] != "open"]
+    if not closed:
+        return {"adherence_pct": 100.0, "violations": [], "checked": 0}
+    violations = []
+    for t in closed:
+        if t["pnl_usd"] < 0 and t["r_multiple"] < -1.05:
+            violations.append({"id": t["id"], "rule": "SL_RUNAWAY", "r": t["r_multiple"]})
+    pct = round((1 - len(violations) / len(closed)) * 100, 1)
+    return {"adherence_pct": pct, "violations": violations, "checked": len(closed)}
+
+
 # ----- Checklist -----
 
 @api_router.get("/checklist/{day}", response_model=ChecklistState)
-async def get_checklist(day: str):
+async def get_checklist(day: str, db=Depends(get_db)):
+    if not _valid_date(day):
+        raise HTTPException(400, "fecha inválida (YYYY-MM-DD)")
     doc = await db.checklists.find_one({"date": day}, {"_id": 0})
     if not doc:
         return ChecklistState(date=day, checked_ids=[])
     return doc
 
 
-@api_router.post("/checklist", response_model=ChecklistState)
-async def update_checklist(payload: ChecklistUpdate):
+@api_router.post("/checklist", response_model=ChecklistState, dependencies=[Depends(require_token)])
+async def update_checklist(payload: ChecklistUpdate, db=Depends(get_db)):
     obj = ChecklistState(date=payload.date, checked_ids=payload.checked_ids)
     doc = obj.model_dump()
     await db.checklists.update_one(
@@ -286,35 +405,51 @@ async def update_checklist(payload: ChecklistUpdate):
     return obj
 
 
+def _valid_date(day: str) -> bool:
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
 # ----- Risk Calculator -----
 
 @api_router.post("/risk/calc")
 async def risk_calculate(inp: RiskCalcInput):
-    if inp.balance <= 0 or inp.entry <= 0 or inp.stop_loss <= 0:
-        raise HTTPException(400, "valores positivos requeridos")
-    if inp.entry == inp.stop_loss:
-        raise HTTPException(400, "entry y SL no pueden ser iguales")
-
     risk_dollars = inp.balance * (inp.risk_pct / 100.0)
     sl_distance = abs(inp.entry - inp.stop_loss)
-    sl_pips = sl_distance / inp.pip_size if inp.pip_size > 0 else sl_distance
-    if sl_pips <= 0 or inp.pip_value <= 0:
-        raise HTTPException(400, "configuración de pip inválida")
+    sl_pips = sl_distance / inp.pip_size
+    if sl_pips <= 0:
+        raise HTTPException(400, "sl_pips inválido")
 
     raw_lots = risk_dollars / (sl_pips * inp.pip_value)
 
-    # Snap to lot_step
-    steps = int(raw_lots / inp.lot_step)
-    snapped = max(inp.min_lot, steps * inp.lot_step)
-    snapped = round(snapped, 4)
+    warnings = []
+    # If even the minimum lot would exceed the risk budget, refuse to size.
+    # Forcing min_lot would silently break the 1% rule.
+    if raw_lots < inp.min_lot:
+        warnings.append(
+            f"Riesgo solicitado (${round(risk_dollars,2)}) < lotaje mínimo "
+            f"({inp.min_lot} = ${round(inp.min_lot * sl_pips * inp.pip_value,2)}). "
+            "Aleja el SL, sube balance o salta el trade."
+        )
+        return {
+            "lots": 0.0,
+            "risk_dollars": 0.0,
+            "risk_pct_actual": 0.0,
+            "sl_distance": round(sl_distance, 5),
+            "sl_pips": round(sl_pips, 2),
+            "warnings": warnings,
+        }
 
-    capped = min(snapped, inp.max_lot)
-    capped = round(capped, 4)
+    steps = int(raw_lots / inp.lot_step)
+    snapped = round(max(inp.min_lot, steps * inp.lot_step), 4)
+    capped = round(min(snapped, inp.max_lot), 4)
 
     actual_risk = capped * sl_pips * inp.pip_value
     actual_risk_pct = actual_risk / inp.balance * 100
 
-    warnings = []
     if capped < snapped:
         warnings.append(f"Lotaje recortado de {snapped} a {capped} (cap de seguridad {inp.max_lot})")
     if inp.risk_pct > MAX_RISK_PER_TRADE_PCT:
@@ -337,18 +472,7 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
