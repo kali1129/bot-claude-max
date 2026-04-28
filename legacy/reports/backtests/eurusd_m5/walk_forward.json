@@ -1,0 +1,287 @@
+{
+  "average_final_equity": 9975.62222814809,
+  "summaries": [
+    {
+      "approved_trades": 0,
+      "closed_trades": 0,
+      "decisions": 69,
+      "final_equity": 10000.0,
+      "realized_pnl": 0.0,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 5,
+      "closed_trades": 5,
+      "decisions": 69,
+      "final_equity": 10046.631693401168,
+      "realized_pnl": 46.63169340116838,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 2,
+      "closed_trades": 2,
+      "decisions": 69,
+      "final_equity": 9990.318958771973,
+      "realized_pnl": -9.681041228026515,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 0,
+      "closed_trades": 0,
+      "decisions": 69,
+      "final_equity": 10000.0,
+      "realized_pnl": 0.0,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 3,
+      "closed_trades": 3,
+      "decisions": 69,
+      "final_equity": 9833.24747037468,
+      "realized_pnl": -166.75252962532068,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 4,
+      "closed_trades": 4,
+      "decisions": 69,
+      "final_equity": 9865.675760162336,
+      "realized_pnl": -134.3242398376642,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 0,
+      "closed_trades": 0,
+      "decisions": 69,
+      "final_equity": 10000.0,
+      "realized_pnl": 0.0,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 4,
+      "closed_trades": 4,
+      "decisions": 69,
+      "final_equity": 10074.49719014734,
+      "realized_pnl": 74.49719014734,
+      "total_bars": 90
+    },
+    {
+      "approved_trades": 4,
+      "closed_trades": 4,
+      "decisions": 69,
+      "final_equity": 9970.228980475316,
+      "realized_pnl": -29.771019524683652,
+      "total_bars": 90
+    }
+  ],
+  "window_results": [
+    {
+      "index": 0,
+      "test_end_bar": 269,
+      "test_start_bar": 180,
+      "test_summary": {
+        "approved_trades": 0,
+        "closed_trades": 0,
+        "decisions": 69,
+        "final_equity": 10000.0,
+        "realized_pnl": 0.0,
+        "total_bars": 90
+      },
+      "train_end_bar": 179,
+      "train_start_bar": 0,
+      "train_summary": {
+        "approved_trades": 5,
+        "closed_trades": 5,
+        "decisions": 159,
+        "final_equity": 9793.000475034807,
+        "realized_pnl": -206.9995249651929,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 1,
+      "test_end_bar": 359,
+      "test_start_bar": 270,
+      "test_summary": {
+        "approved_trades": 5,
+        "closed_trades": 5,
+        "decisions": 69,
+        "final_equity": 10046.631693401168,
+        "realized_pnl": 46.63169340116838,
+        "total_bars": 90
+      },
+      "train_end_bar": 269,
+      "train_start_bar": 90,
+      "train_summary": {
+        "approved_trades": 0,
+        "closed_trades": 0,
+        "decisions": 159,
+        "final_equity": 10000.0,
+        "realized_pnl": 0.0,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 2,
+      "test_end_bar": 449,
+      "test_start_bar": 360,
+      "test_summary": {
+        "approved_trades": 2,
+        "closed_trades": 2,
+        "decisions": 69,
+        "final_equity": 9990.318958771973,
+        "realized_pnl": -9.681041228026515,
+        "total_bars": 90
+      },
+      "train_end_bar": 359,
+      "train_start_bar": 180,
+      "train_summary": {
+        "approved_trades": 5,
+        "closed_trades": 5,
+        "decisions": 159,
+        "final_equity": 10174.933814505906,
+        "realized_pnl": 174.9338145059064,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 3,
+      "test_end_bar": 539,
+      "test_start_bar": 450,
+      "test_summary": {
+        "approved_trades": 0,
+        "closed_trades": 0,
+        "decisions": 69,
+        "final_equity": 10000.0,
+        "realized_pnl": 0.0,
+        "total_bars": 90
+      },
+      "train_end_bar": 449,
+      "train_start_bar": 270,
+      "train_summary": {
+        "approved_trades": 7,
+        "closed_trades": 7,
+        "decisions": 159,
+        "final_equity": 9908.40739839687,
+        "realized_pnl": -91.59260160312988,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 4,
+      "test_end_bar": 629,
+      "test_start_bar": 540,
+      "test_summary": {
+        "approved_trades": 3,
+        "closed_trades": 3,
+        "decisions": 69,
+        "final_equity": 9833.24747037468,
+        "realized_pnl": -166.75252962532068,
+        "total_bars": 90
+      },
+      "train_end_bar": 539,
+      "train_start_bar": 360,
+      "train_summary": {
+        "approved_trades": 2,
+        "closed_trades": 2,
+        "decisions": 159,
+        "final_equity": 9990.318958771973,
+        "realized_pnl": -9.681041228026515,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 5,
+      "test_end_bar": 719,
+      "test_start_bar": 630,
+      "test_summary": {
+        "approved_trades": 4,
+        "closed_trades": 4,
+        "decisions": 69,
+        "final_equity": 9865.675760162336,
+        "realized_pnl": -134.3242398376642,
+        "total_bars": 90
+      },
+      "train_end_bar": 629,
+      "train_start_bar": 450,
+      "train_summary": {
+        "approved_trades": 3,
+        "closed_trades": 3,
+        "decisions": 159,
+        "final_equity": 9833.24747037468,
+        "realized_pnl": -166.75252962532068,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 6,
+      "test_end_bar": 809,
+      "test_start_bar": 720,
+      "test_summary": {
+        "approved_trades": 0,
+        "closed_trades": 0,
+        "decisions": 69,
+        "final_equity": 10000.0,
+        "realized_pnl": 0.0,
+        "total_bars": 90
+      },
+      "train_end_bar": 719,
+      "train_start_bar": 540,
+      "train_summary": {
+        "approved_trades": 3,
+        "closed_trades": 3,
+        "decisions": 159,
+        "final_equity": 9798.326973863012,
+        "realized_pnl": -201.67302613698848,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 7,
+      "test_end_bar": 899,
+      "test_start_bar": 810,
+      "test_summary": {
+        "approved_trades": 4,
+        "closed_trades": 4,
+        "decisions": 69,
+        "final_equity": 10074.49719014734,
+        "realized_pnl": 74.49719014734,
+        "total_bars": 90
+      },
+      "train_end_bar": 809,
+      "train_start_bar": 630,
+      "train_summary": {
+        "approved_trades": 4,
+        "closed_trades": 4,
+        "decisions": 159,
+        "final_equity": 9865.675760162336,
+        "realized_pnl": -134.3242398376642,
+        "total_bars": 180
+      }
+    },
+    {
+      "index": 8,
+      "test_end_bar": 989,
+      "test_start_bar": 900,
+      "test_summary": {
+        "approved_trades": 4,
+        "closed_trades": 4,
+        "decisions": 69,
+        "final_equity": 9970.228980475316,
+        "realized_pnl": -29.771019524683652,
+        "total_bars": 90
+      },
+      "train_end_bar": 899,
+      "train_start_bar": 720,
+      "train_summary": {
+        "approved_trades": 4,
+        "closed_trades": 4,
+        "decisions": 159,
+        "final_equity": 10074.49719014734,
+        "realized_pnl": 74.49719014734,
+        "total_bars": 180
+      }
+    }
+  ],
+  "windows": 9
+}

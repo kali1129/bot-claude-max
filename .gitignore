@@ -92,3 +92,14 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Runtime state — never commit live trading data or local session metadata
+.claude/
+**/.uvicorn.log
+**/uvicorn*.log
+mcp-scaffolds/*/paper_open.json
+mcp-scaffolds/*/paper_trades.jsonl
+mcp-scaffolds/*/last_scan.json
+mcp-scaffolds/*/sync.json
+mcp-scaffolds/*/.*.pid
+mcp-scaffolds/*/.venv/

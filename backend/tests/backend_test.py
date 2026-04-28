@@ -30,14 +30,17 @@ class TestPlanEndpoints:
         r = client.get(f"{API}/")
         assert r.status_code == 200
         d = r.json()
-        assert d["capital"] == 800
+        # ``capital`` is now live MT5 balance; ``capital_source`` is mt5|fallback.
+        assert "capital" in d
+        assert d["capital_source"] in {"mt5", "fallback"}
         assert "message" in d
 
     def test_plan_data(self, client):
         r = client.get(f"{API}/plan/data")
         assert r.status_code == 200
         d = r.json()
-        assert d["config"]["capital"] == 800
+        # The $800 plan rule is exposed as ``capital_target``; ``capital`` is live.
+        assert d["config"]["capital_target"] == 800
         assert len(d["mcps"]) == 4
         assert len(d["strategies"]) == 6
         assert len(d["rules"]) == 20

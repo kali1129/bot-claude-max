@@ -6,6 +6,29 @@
 > human-in-the-loop control panel. Capital target: **$800 USD real**.
 > Discipline target: **never violated**.
 
+## ⚡ Estado actual de esta instalación
+
+- **Dashboard** corriendo en http://localhost:3000 (React) + :8001 (FastAPI) + Mongo en WSL.
+- **4 MCPs** construidos y testeados (`trading-mt5-mcp`, `risk-mcp`, `analysis-mcp`, `news-mcp`) — 117 tests passing + 12 live tests autoskip cuando MT5 está caído.
+- **MT5 desconectado** (esperando recuperación de password). El dashboard renderiza con balance fallback `$0` (configurable vía `CAPITAL_FALLBACK_USD` en `backend/.env`).
+
+## 🔑 Cuando recuperes la password de MT5
+
+Un solo comando hace todo (login en MT5, prueba 14 nombres de server distintos, escribe la password al `.env` cifrado, refresca el dashboard):
+
+```bash
+backend/.venv/Scripts/python.exe connect_account.py
+```
+
+El script te pedirá la password (sin echo). Si la cuenta autentica, en menos de 10 segundos verás tu balance real en el dashboard.
+
+Si no quieres usar el script, manualmente:
+1. Edita `mcp-scaffolds/trading-mt5-mcp/.env` y pon `MT5_PASSWORD=<tu password>`
+2. Restart del backend (yo lo automatizo si me lo pides).
+3. El bridge re-autentica solo y el dashboard refresca cada 8 segundos.
+
+---
+
 This repo is the **plan**, not the runtime. When you clone it on your machine,
 hand it to Claude Code (or Desktop) and say: *"build this following
 `CLAUDE.md` and `BUILD_PLAN.md`"*. Claude reads the docs, generates the MCP

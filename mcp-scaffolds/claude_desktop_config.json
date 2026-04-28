@@ -1,0 +1,59 @@
+{
+  "mcpServers": {
+    "trading": {
+      "command": "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\trading-mt5-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\trading-mt5-mcp\\server.py"
+      ],
+      "env": {
+        "MT5_LOGIN": "352141469",
+        "MT5_SERVER": "XMGlobal-MT5 11",
+        "MT5_PATH": "C:\\Program Files\\XM Global MT5\\terminal64.exe",
+        "TRADING_MODE": "paper",
+        "MAX_LOTS_PER_TRADE": "0.5",
+        "BLOCKED_HOURS_UTC": "21:00-07:00",
+        "MT5_MAGIC": "20260427",
+        "HALT_FILE": "~/mcp/.HALT",
+        "DASHBOARD_URL": "http://localhost:8001",
+        "LOG_LEVEL": "INFO",
+        "LOG_DIR": "~/mcp/logs"
+      }
+    },
+    "risk": {
+      "command": "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\risk-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\risk-mcp\\server.py"
+      ],
+      "env": {
+        "STARTING_BALANCE": "800",
+        "MAX_RISK_PER_TRADE_PCT": "1.0",
+        "MAX_DAILY_LOSS_PCT": "3.0",
+        "MAX_CONSECUTIVE_LOSSES": "3",
+        "MAX_TRADES_PER_DAY": "5",
+        "LOG_LEVEL": "INFO",
+        "LOG_DIR": "~/mcp/logs"
+      }
+    },
+    "analysis": {
+      "command": "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\analysis-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\analysis-mcp\\server.py"
+      ],
+      "env": {
+        "LOG_LEVEL": "INFO",
+        "LOG_DIR": "~/mcp/logs"
+      }
+    },
+    "news": {
+      "command": "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\news-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\Anderson Lora\\bugbounty\\NEW-BOT-PRO_MAX\\mcp-scaffolds\\news-mcp\\server.py"
+      ],
+      "env": {
+        "FF_USER_AGENT": "Mozilla/5.0 (X11; Linux x86_64) news-mcp/1.0",
+        "LOG_LEVEL": "INFO",
+        "LOG_DIR": "~/mcp/logs"
+      }
+    }
+  }
+}

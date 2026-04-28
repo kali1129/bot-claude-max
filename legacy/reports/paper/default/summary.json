@@ -1,0 +1,20 @@
+{
+  "blocked_trades": 383,
+  "cash": 9987.040000000032,
+  "equity": 9987.040000000032,
+  "initial_balance": 10000.0,
+  "losses": 2,
+  "open_positions": 0,
+  "realized_pnl": -12.959999999968204,
+  "realized_pnl_by_symbol": {
+    "EURUSD": -12.959999999967664
+  },
+  "strategy_events": 440,
+  "total_trades": 5,
+  "trade_count_by_symbol": {
+    "EURUSD": 5
+  },
+  "unrealized_pnl": 0,
+  "win_rate": 0.6,
+  "wins": 3
+}

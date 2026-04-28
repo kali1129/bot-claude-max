@@ -1,0 +1,20 @@
+{
+  "_source": "legacy:xm-mt5-trading-platform/data/daily_pnl_state.json",
+  "_migrated_at_utc": "2026-04-28T04:32:46.024112+00:00",
+  "daily_trading_enabled": true,
+  "trading_stopped_for_day": true,
+  "close_only_mode": false,
+  "allowed_symbols_today": [
+    "BTCUSD",
+    "XAUUSD",
+    "EURUSD"
+  ],
+  "stop_reason_code": "DAILY_PROFIT_TARGET_REACHED",
+  "daily_loss_limit_usd": 25.0,
+  "daily_profit_target_usd": 25.0,
+  "remaining_loss_capacity_usd": 25.0,
+  "remaining_profit_to_target_usd": 0.0,
+  "last_reset_at": "2026-04-28T00:43:32.931701+00:00",
+  "stop_triggered_at": "2026-04-27T18:18:40.374000+00:00",
+  "resume_on_next_day": true
+}

@@ -37,7 +37,12 @@ def client():
 def test_root(client):
     r = client.get("/api/")
     assert r.status_code == 200
-    assert r.json()["capital"] == 800
+    body = r.json()
+    # ``capital`` is now dynamic (live MT5 balance when reachable, else
+    # falls back to plan_content.CAPITAL = 800). ``capital_source`` tells
+    # the caller which path was taken.
+    assert "capital" in body
+    assert body["capital_source"] in {"mt5", "fallback"}
 
 
 def test_health(client):
@@ -50,7 +55,9 @@ def test_plan_data(client):
     r = client.get("/api/plan/data")
     assert r.status_code == 200
     d = r.json()
-    assert d["config"]["capital"] == 800
+    # capital_target is the static $800 plan rule; capital is live.
+    assert d["config"]["capital_target"] == 800
+    assert d["config"]["capital_source"] in {"mt5", "fallback"}
     assert len(d["mcps"]) == 4
     assert len(d["strategies"]) == 6
     assert len(d["rules"]) == 20

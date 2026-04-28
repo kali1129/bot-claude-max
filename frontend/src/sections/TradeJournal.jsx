@@ -12,6 +12,7 @@ import {
     ResponsiveContainer,
     ReferenceLine,
 } from "recharts";
+import ResearchLog from "./ResearchLog";
 
 const COMMON_SYMBOLS = [
     "EURUSD",
@@ -105,12 +106,14 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
     };
 
     const equity = stats?.equity_curve || [];
-    const minE = equity.length
-        ? Math.min(...equity.map((e) => e.equity))
-        : 800;
-    const maxE = equity.length
-        ? Math.max(...equity.map((e) => e.equity))
-        : 800;
+    // Baseline = starting equity from stats (the first equity sample) or 0
+    // when there's no data. Earlier hardcoded $800 was the original plan
+    // capital; the bot's actual capital is whatever MT5 reports. Keeping
+    // this dynamic stops the journal lying about a $600 phantom drawdown
+    // when the user starts with a different balance.
+    const baseline = equity.length > 0 ? equity[0].equity : 0;
+    const minE = equity.length ? Math.min(...equity.map((e) => e.equity)) : baseline;
+    const maxE = equity.length ? Math.max(...equity.map((e) => e.equity)) : baseline;
     const yPad = Math.max(5, (maxE - minE) * 0.1);
 
     return (
@@ -405,12 +408,15 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
                     </form>
                 )}
 
+                {/* Research log — per-trade post-mortem feedback */}
+                <ResearchLog api={api} />
+
                 {/* Equity curve */}
                 <div className="panel p-5 mb-3" data-testid="equity-curve">
                     <div className="flex items-center justify-between mb-4">
                         <div className="kicker">// EQUITY CURVE</div>
                         <div className="font-mono text-[11px] text-[var(--text-dim)]">
-                            base: $800.00
+                            base: ${baseline.toFixed(2)}
                         </div>
                     </div>
                     {equity.length === 0 ? (
@@ -456,7 +462,7 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
                                         }}
                                     />
                                     <ReferenceLine
-                                        y={800}
+                                        y={baseline}
                                         stroke="#71717a"
                                         strokeDasharray="3 3"
                                     />

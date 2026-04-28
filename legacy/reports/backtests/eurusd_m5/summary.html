@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Backtest Report</title>
+  <style>
+    body { font-family: "Segoe UI", Tahoma, sans-serif; margin: 24px; color: #18202a; background: #f6f8fb; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: #ffffff; border: 1px solid #d6dde8; border-radius: 12px; padding: 16px; box-shadow: 0 4px 18px rgba(12, 23, 38, 0.05); }
+    h1, h2 { margin-top: 0; color: #102033; }
+    table { width: 100%; border-collapse: collapse; background: #ffffff; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e4eaf2; }
+    th { background: #edf3fa; font-weight: 600; }
+    .section { margin-bottom: 24px; }
+    .muted { color: #5d6b7b; }
+  </style>
+</head>
+<body>
+  <h1>Backtest Report</h1>
+  <p class="muted">EURUSD M5 | 2024-01-02T08:00:00+00:00 to 2024-01-05T20:00:00+00:00</p>
+
+  <div class="grid">
+    <div class="card"><h2>Trades</h2><p>Total trades: <strong>11</strong><br/>Win rate: <strong>45.45%</strong><br/>Expectancy: <strong>-25.00</strong></p></div>
+    <div class="card"><h2>Profitability</h2><p>Profit factor: <strong>0.44</strong><br/>Average win: <strong>42.54</strong><br/>Average loss: <strong>-81.28</strong></p></div>
+    <div class="card"><h2>Risk</h2><p>Max drawdown: <strong>2.75%</strong><br/>Max consecutive losses: <strong>3</strong><br/>Final equity: <strong>9725.05</strong></p></div>
+  </div>
+
+  <div class="section">
+    <h2>Parameters</h2>
+    <table><tbody><tr><td>commission_per_lot</td><td>0.0</td></tr>
+<tr><td>group_name</td><td>baseline-eurusd-m5</td></tr>
+<tr><td>risk_max_daily_loss_pct</td><td>0.02</td></tr>
+<tr><td>risk_max_drawdown_pct</td><td>0.08</td></tr>
+<tr><td>risk_max_risk_per_trade_pct</td><td>0.005</td></tr>
+<tr><td>slippage_base_points</td><td>1.0</td></tr>
+<tr><td>slippage_max_points</td><td>12.0</td></tr>
+<tr><td>strategy_fast_period</td><td>5</td></tr>
+<tr><td>strategy_name</td><td>deterministic_momentum</td></tr>
+<tr><td>strategy_params</td><td>{}</td></tr>
+<tr><td>strategy_slow_period</td><td>20</td></tr></tbody></table>
+  </div>
+
+  <div class="section">
+    <h2>Monthly Returns</h2>
+    <table><thead><tr><th>Month</th><th>Return</th></tr></thead><tbody><tr><td>2024-01</td><td>-2.75%</td></tr></tbody></table>
+  </div>
+
+  <div class="section">
+    <h2>Session Stats</h2>
+    <table><thead><tr><th>Session</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net PnL</th></tr></thead><tbody><tr><td>LONDON</td><td>6</td><td>4</td><td>2</td><td>66.67%</td><td>3.65</td></tr>
+<tr><td>NEW_YORK</td><td>5</td><td>1</td><td>4</td><td>20.00%</td><td>-278.61</td></tr></tbody></table>
+  </div>
+
+  <div class="section">
+    <h2>Failure Reasons</h2>
+    <table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody><tr><td>FILTER_SESSION_BLOCKED</td><td>297</td></tr>
+<tr><td>LOSS_COOLDOWN_ACTIVE</td><td>34</td></tr>
+<tr><td>MAX_CONSECUTIVE_LOSSES_REACHED</td><td>231</td></tr>
+<tr><td>MAX_DAILY_LOSS_REACHED</td><td>16</td></tr>
+<tr><td>MAX_OPEN_POSITIONS_REACHED</td><td>119</td></tr>
+<tr><td>MAX_SYMBOL_EXPOSURE_REACHED</td><td>4</td></tr>
+<tr><td>NO_ENTRY_SIGNAL</td><td>119</td></tr>
+<tr><td>SESSION_NOT_ALLOWED</td><td>173</td></tr></tbody></table>
+  </div>
+
+  <div class="section">
+    <h2>Exposure</h2>
+    <table><tbody>
+      <tr><td>Time in market</td><td>13.68%</td></tr>
+      <tr><td>Average open positions</td><td>0.14</td></tr>
+      <tr><td>Max open positions</td><td>1</td></tr>
+      <tr><td>Average exposure units</td><td>13350.84</td></tr>
+    </tbody></table>
+  </div>
+
+  <div class='section'><h2>Walk-Forward</h2><table><thead><tr><th>Window</th><th>Train Equity</th><th>Test Equity</th><th>Test Trades</th></tr></thead><tbody><tr><td>0</td><td>9793.00</td><td>10000.00</td><td>0</td></tr>
+<tr><td>1</td><td>10000.00</td><td>10046.63</td><td>5</td></tr>
+<tr><td>2</td><td>10174.93</td><td>9990.32</td><td>2</td></tr>
+<tr><td>3</td><td>9908.41</td><td>10000.00</td><td>0</td></tr>
+<tr><td>4</td><td>9990.32</td><td>9833.25</td><td>3</td></tr>
+<tr><td>5</td><td>9833.25</td><td>9865.68</td><td>4</td></tr>
+<tr><td>6</td><td>9798.33</td><td>10000.00</td><td>0</td></tr>
+<tr><td>7</td><td>9865.68</td><td>10074.50</td><td>4</td></tr>
+<tr><td>8</td><td>10074.50</td><td>9970.23</td><td>4</td></tr></tbody></table></div>
+</body>
+</html>

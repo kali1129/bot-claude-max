@@ -2,23 +2,18 @@ import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
+import LiveDashboard from "./sections/LiveDashboard";
 import Overview from "./sections/Overview";
-import MCPArchitecture from "./sections/MCPArchitecture";
-import Strategies from "./sections/Strategies";
-import Rules from "./sections/Rules";
-import Checklist from "./sections/Checklist";
-import RiskCalculator from "./sections/RiskCalculator";
+import ControlPanel from "./sections/ControlPanel";
+import ConfigPanel from "./sections/ConfigPanel";
 import TradeJournal from "./sections/TradeJournal";
-import SetupGuide from "./sections/SetupGuide";
-import Mindset from "./sections/Mindset";
-import ArchitectureDocs from "./sections/ArchitectureDocs";
-import Footer from "./components/Footer";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 export default function Dashboard() {
     const [planData, setPlanData] = useState(null);
     const [stats, setStats] = useState(null);
+    const [botConfig, setBotConfig] = useState(null);
     const [activeSection, setActiveSection] = useState("overview");
 
     const fetchPlan = useCallback(async () => {
@@ -39,25 +34,25 @@ export default function Dashboard() {
         }
     }, []);
 
+    const fetchBotConfig = useCallback(async () => {
+        try {
+            const res = await axios.get(`${API}/bot/config`);
+            setBotConfig(res.data);
+        } catch (e) {
+            console.error("bot/config error", e);
+        }
+    }, []);
+
     useEffect(() => {
         fetchPlan();
         fetchStats();
-    }, [fetchPlan, fetchStats]);
+        fetchBotConfig();
+        const id = setInterval(fetchStats, 8000);
+        return () => clearInterval(id);
+    }, [fetchPlan, fetchStats, fetchBotConfig]);
 
-    // Section observer for sidebar active state
     useEffect(() => {
-        const ids = [
-            "overview",
-            "mcps",
-            "strategies",
-            "rules",
-            "checklist",
-            "risk-calc",
-            "journal",
-            "setup",
-            "mindset",
-            "architecture-docs",
-        ];
+        const ids = ["live", "overview", "control", "config", "journal"];
         const observer = new IntersectionObserver(
             (entries) => {
                 entries.forEach((entry) => {
@@ -81,7 +76,7 @@ export default function Dashboard() {
                 className="min-h-screen flex items-center justify-center"
                 data-testid="loading-screen"
             >
-                <div className="kicker">// LOADING TRADING PLAN…</div>
+                <div className="kicker">// CARGANDO…</div>
             </div>
         );
     }
@@ -98,17 +93,16 @@ export default function Dashboard() {
                 />
 
                 <div className="grid-bg">
+                    <LiveDashboard api={API} />
                     <Overview config={planData.config} stats={stats} />
-                    <MCPArchitecture mcps={planData.mcps} />
-                    <Strategies strategies={planData.strategies} />
-                    <Rules rules={planData.rules} />
-                    <Checklist
-                        checklist={planData.checklist}
+                    <ControlPanel api={API} onMutated={fetchStats} />
+                    <ConfigPanel
                         api={API}
-                    />
-                    <RiskCalculator
-                        api={API}
-                        defaultBalance={planData.config.capital}
+                        config={botConfig}
+                        onMutated={() => {
+                            fetchStats();
+                            fetchBotConfig();
+                        }}
                     />
                     <TradeJournal
                         api={API}
@@ -116,10 +110,6 @@ export default function Dashboard() {
                         stats={stats}
                         onMutated={fetchStats}
                     />
-                    <SetupGuide steps={planData.setup_guide} />
-                    <Mindset principles={planData.mindset} />
-                    <ArchitectureDocs api={API} />
-                    <Footer api={API} />
                 </div>
             </main>
         </div>
