@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 __version__ = "2.1.0"
 
-MAX_RISK_PER_TRADE_PCT: float = 1.0
+MAX_RISK_PER_TRADE_PCT: float = 5.0
 MAX_DAILY_LOSS_PCT:     float = 999.0  # 2026-04-28: stress test mode by
                                         # explicit user authorization. Was 3.
                                         # The guard remains, the cap is just
