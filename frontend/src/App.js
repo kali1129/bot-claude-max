@@ -1,4 +1,5 @@
 import "@/App.css";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Dashboard from "./Dashboard";
 import { Toaster } from "sonner";
@@ -6,11 +7,13 @@ import { Toaster } from "sonner";
 function App() {
     return (
         <div className="App">
+            <ErrorBoundary>
             <BrowserRouter>
                 <Routes>
                     <Route path="/" element={<Dashboard />} />
                 </Routes>
             </BrowserRouter>
+            </ErrorBoundary>
             <Toaster
                 theme="dark"
                 position="bottom-right"

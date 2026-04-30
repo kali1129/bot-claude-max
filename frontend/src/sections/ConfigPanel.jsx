@@ -1,23 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "sonner";
-import {
-    Cog,
-    KeyRound,
-    Cpu,
-    PlayCircle,
-    StopCircle,
-    RotateCw,
-    Bot,
-    Save,
-    Eye,
-    EyeOff,
-    AlertTriangle,
-    CheckCircle2,
-    XCircle,
-    MessageCircle,
-    Send,
-} from "lucide-react";
+import { PlayCircle, StopCircle, RotateCw, Bot, Save, Eye, EyeOff, CheckCircle2, XCircle, Send, Cog, Cpu, KeyRound, MessageCircle } from "lucide-react";
 
 const TOKEN = process.env.REACT_APP_DASHBOARD_TOKEN || "";
 const authHeaders = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
@@ -70,7 +54,7 @@ function BotConfigCard({ api, config, onSaved }) {
                 TRADING_MODE: config.TRADING_MODE || "demo",
                 MAX_LOTS_PER_TRADE: config.MAX_LOTS_PER_TRADE || "0.5",
                 MT5_MAGIC: config.MT5_MAGIC || "20260427",
-                DASHBOARD_URL: config.DASHBOARD_URL || "http://localhost:8010",
+                DASHBOARD_URL: config.DASHBOARD_URL || "http://127.0.0.1:8000",
                 SYNC_INTERVAL_SECONDS: config.SYNC_INTERVAL_SECONDS || "30",
             });
         }
@@ -135,11 +119,8 @@ function BotConfigCard({ api, config, onSaved }) {
                 <Save size={14} />
                 {saving ? "Guardando…" : "Guardar configuración"}
             </button>
-            <div className="text-[10px] text-[var(--amber)] font-mono mt-3 stripes-warn p-2">
-                ⚠ Las reglas duras del sistema (1% riesgo, 3% diario, R:R 1:2,
-                1 posición, blackout horario) NO son editables desde aquí —
-                viven en <span className="text-white">_shared/rules.py</span>{" "}
-                por diseño.
+            <div className="text-[10px] text-[var(--text-dim)] font-mono mt-3 p-2">
+                Todas las reglas son configurables. Los cambios se aplican al guardar.
             </div>
         </Section>
     );

@@ -99,7 +99,7 @@ RESEARCH_LOG = LOG_DIR / "trade_research.jsonl"
 RESEARCH_STATE_FILE = Path(os.path.expanduser(
     os.environ.get("LOG_DIR", "~/mcp/logs"))).parent / "state" / "position_state.json"
 
-DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:8001").rstrip("/")
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://127.0.0.1:8000").rstrip("/")
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "").strip()
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TG_CHAT  = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
@@ -135,10 +135,23 @@ WATCHLIST_DEFAULT = [
     "BTCUSD", "ETHUSD",
     "XAUUSD",
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-    "USDCHF", "NZDUSD", "USDCAD",
 ]
 
 ALWAYS_TRADEABLE = {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT"}
+
+NL = chr(10)  # newline for use inside f-strings
+
+# === Multi-strategy engine (v3) ===
+sys.path.insert(0, str(HERE))  # ensure strategies/ is importable
+import strategies as strat_engine
+
+# Global hard filters
+MAX_SPREAD_PCT_OF_R = 35.0        # reject if spread > 35% of SL distance
+FOREX_SESSION_START_UTC = 7       # forex: only trade 07:00-20:00 UTC
+FOREX_SESSION_END_UTC = 20
+ALWAYS_TRADEABLE_24H = {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT"}
+
+
 
 _running = True
 
@@ -232,6 +245,7 @@ def _research_open(*, ticket: int, setup: dict, lots: float, risk_dollars: float
         # Spread at entry: how much the bid-ask gap is eating before we even
         # start. If spread is N% of the SL distance, that's N% of every R
         # given to the broker for free. Critical for live transition.
+        "strategy_id": setup.get("strategy_id", "unknown"),
         "spread_at_entry": (round(float(spread), 6) if spread is not None else None),
         "spread_pct_of_r": (
             round(float(spread) / max(abs(setup["entry"] - setup["sl"]), 1e-9) * 100, 2)
@@ -714,6 +728,45 @@ def _manage_open_positions(iteration: int) -> None:
                 _audit({"iter": iteration, "phase": "research_close",
                         "ticket": ticket, "exit": exit_price,
                         "pnl": pnl, "r": r_mult, "reason": reason})
+                # Telegram: trade closed (demo/live) -- full post-mortem
+                # Compute duration + MFE/MAE from state snapshot
+                _tg_dur_s = None
+                _tg_opened = snap.get("opened_at")
+                if _tg_opened:
+                    try:
+                        _tg_o = datetime.fromisoformat(str(_tg_opened).replace("Z", "+00:00"))
+                        _tg_dur_s = int((datetime.now(timezone.utc) - _tg_o).total_seconds())
+                    except (ValueError, TypeError):
+                        pass
+                _tg_sl_dist = abs(entry - orig_sl) if orig_sl else 0.0
+                if _tg_sl_dist > 0:
+                    if side == 'buy':
+                        _tg_mfe = (snap.get("max_favorable_price", entry) - entry) / _tg_sl_dist
+                        _tg_mae = (entry - snap.get("max_adverse_price", entry)) / _tg_sl_dist * -1
+                    else:
+                        _tg_mfe = (entry - snap.get("max_favorable_price", entry)) / _tg_sl_dist
+                        _tg_mae = (snap.get("max_adverse_price", entry) - entry) / _tg_sl_dist * -1
+                else:
+                    _tg_mfe = _tg_mae = 0.0
+                _ci = "\U0001f7e2" if pnl > 0 else ("\U0001f534" if pnl < 0 else "⚪")
+                _cs = "compra" if side == "buy" else "venta"
+                if _tg_dur_s is not None:
+                    _ch = _tg_dur_s // 3600
+                    _cm = (_tg_dur_s % 3600) // 60
+                    _cd = f"{_ch}h {_cm}m" if _ch > 0 else f"{_cm}m"
+                else:
+                    _cd = "?"
+                _tg_send(
+                    f"{_ci} *Trade cerrado* ({reason})\n"
+                    f"\U0001f4cc `{out_deal.symbol}` {_cs} · ticket `{ticket}`\n"
+                    f"Entry: `{entry:.5f}` → Exit: `{exit_price:.5f}`\n"
+                    f"P&L: *${pnl:+.2f}* · *{r_mult:+.2f}R*\n"
+                    f"⏱ Duracion: `{_cd}`\n"
+                    f"\U0001f4c8 MFE: `{_tg_mfe:+.2f}R` · \U0001f4c9 MAE: `{_tg_mae:+.2f}R`\n"
+                    f"\U0001f512 BE: {'SI' if snap.get('be_moved') else 'NO'} · "
+                    f"Trails: `{snap.get('trail_count', 0)}`\n"
+                    f"SL orig: `{orig_sl}` · TP orig: `{orig_tp}`"
+                )
             except Exception as exc:  # noqa: BLE001
                 log.warning("research close write failed for %s: %s", ticket, exc)
     except Exception as exc:  # noqa: BLE001
@@ -753,7 +806,9 @@ def _manage_open_positions(iteration: int) -> None:
             if atr <= 0:
                 continue
 
-            r = _r_progress(side, entry, atr, current_price)
+            # Use the active strategy's SL multiplier for correct R calculation
+            _sl_mult = strat_engine.get_active_strategy().sl_atr_mult
+            r = _r_progress(side, entry, _sl_mult * atr, current_price)
             sl_at_or_past_entry = (
                 (side == "buy" and current_sl >= entry > 0) or
                 (side == "sell" and 0 < current_sl <= entry)
@@ -862,37 +917,28 @@ def _atr_distance(bars, default=0.0010) -> float:
 
 
 def _propose_setup(bars_m15, bars_h4, bars_d1, tick) -> list:
-    """Return up to 2 candidate setups (long, short) with entry/sl/tp."""
+    """Multi-strategy: all eligible strategies propose signals.
+    Returns proposals from ALL strategies active at this hour.
+    The scan loop picks the best score across all proposals."""
     if not tick:
         return []
-    atr = _atr_distance(bars_m15)
-    if atr <= 0:
-        return []
+    sym = getattr(_propose_setup, '_current_symbol', 'UNKNOWN')
+    eligible = strat_engine.get_eligible_strategies()
     proposals = []
-    for side in ("buy", "sell"):
-        entry = tick["ask"] if side == "buy" else tick["bid"]
-        # SL 1.0×ATR, TP 2.5×ATR. R:R nominal 2.5 (well above MIN_RR=2.0).
-        # The earlier 2.0 and 2.05 multipliers tripped RR_TOO_LOW after the
-        # 5-decimal price rounding because the rounding noise on a tight
-        # 2.0 ratio drops it under 2.0 about half the time. 2.5× gives the
-        # bot real headroom AND better expectancy when the trade wins.
-        if side == "buy":
-            sl = entry - 1.0 * atr
-            tp = entry + 2.5 * atr
-        else:
-            sl = entry + 1.0 * atr
-            tp = entry - 2.5 * atr
-        score = scoring.score_setup(bars_m15, side, entry, sl, tp,
-                                     ohlcv_h4=bars_h4, ohlcv_d1=bars_d1)
-        proposals.append({
-            "side": side, "entry": round(entry, 5), "sl": round(sl, 5),
-            "tp": round(tp, 5), "atr": round(atr, 5),
-            "score": score["score"], "rec": score["recommendation"],
-            "breakdown": score["breakdown"],
-        })
+    for strategy in eligible:
+        try:
+            signals = strategy.propose(sym, tick, bars_m15, bars_h4, bars_d1)
+            for s in signals:
+                proposals.append({
+                    "side": s.side, "entry": s.entry, "sl": s.sl,
+                    "tp": s.tp, "atr": s.atr, "score": s.score,
+                    "rec": s.rec, "breakdown": s.breakdown,
+                    "strategy_id": s.strategy_id,
+                    "extra": s.extra,
+                })
+        except Exception as exc:
+            log.warning("strategy %s failed for %s: %s", strategy.id, sym, exc)
     return proposals
-
-
 def _save_last_scan(best, candidates) -> None:
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -927,6 +973,7 @@ def _scan(watchlist) -> dict | None:
             d1 = trading.get_rates(sym, "D1", 100)
             d1_bars = d1.get("bars") if "bars" in d1 else None
 
+            _propose_setup._current_symbol = sym  # pass symbol context
             proposals = _propose_setup(m15["bars"], h4_bars, d1_bars, tick_resp)
             for p in proposals:
                 iteration_log.append({"symbol": sym, **p})
@@ -963,7 +1010,7 @@ def main():
                     help="seconds between scans (default 300)")
     ap.add_argument("--risk-pct", type=float, default=1.0,
                     help="risk percent per trade (default 1.0)")
-    ap.add_argument("--min-score", type=int, default=70,
+    ap.add_argument("--min-score", type=int, default=60,
                     help="min composite score to enter (default 70)")
     ap.add_argument("--symbols", default=None,
                     help="comma-separated watchlist override")
@@ -976,8 +1023,17 @@ def main():
     watchlist = (args.symbols.split(",") if args.symbols else WATCHLIST_DEFAULT)
     watchlist = [s.strip() for s in watchlist if s.strip()]
 
+    _active_name = strat_engine.get_active_strategy().name
     log.info("auto-trader starting — interval=%ss risk=%.1f%% min_score=%d watchlist=%s",
              args.interval, args.risk_pct, args.min_score, watchlist)
+    _tg_send(
+        f"\U0001f916 *Auto-trader iniciado*\n"
+        f"⏱ Intervalo: `{args.interval}s`\n"
+        f"\U0001f4b0 Riesgo: `{args.risk_pct}%` por trade\n"
+        f"\U0001f4ca Min score: `{args.min_score}`\n"
+        f"\U0001f4cb Watchlist: `{','.join(watchlist)}`\n"
+        f"\U0001f550 UTC: `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
+    )
     _audit({"event": "start", "interval": args.interval, "risk_pct": args.risk_pct,
             "min_score": args.min_score, "watchlist": watchlist})
 
@@ -1005,6 +1061,46 @@ def main():
             # Runs BEFORE the paper monitor so MT5 SL changes propagate before
             # any other check.
             _manage_open_positions(iteration)
+
+            # Periodic summary every 12 iterations (~1 hour at 5min interval)
+            if iteration % 12 == 0:
+                try:
+                    _sa = trading.get_account_info()
+                    _sp = trading.get_open_positions().get("positions", [])
+                    _sb = _sa.get("balance", 0)
+                    _se = _sa.get("equity", 0)
+                    _sf = _sa.get("profit", 0)
+                    _sm = _sa.get("margin_free", 0)
+                    _ss = [p["symbol"] for p in _sp]
+                    _sd = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    _sw = _sl2 = 0
+                    _st = 0.0
+                    try:
+                        with open(RESEARCH_LOG, "r") as _srf:
+                            for _sln in _srf:
+                                try:
+                                    _sr = json.loads(_sln)
+                                    if _sr.get("event") == "close" and _sr.get("ts", "").startswith(_sd):
+                                        _spnl = float(_sr.get("pnl_usd", 0))
+                                        _st += _spnl
+                                        if _spnl > 0: _sw += 1
+                                        elif _spnl < 0: _sl2 += 1
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+                    except FileNotFoundError:
+                        pass
+                    _so = f" ({', '.join(_ss)})" if _ss else ""
+                    _tg_send(
+                        f"\U0001f4ca *Resumen horario* (iter {iteration})\n"
+                        f"\U0001f4b0 Balance: `${_sb:.2f}` · Equity: `${_se:.2f}`\n"
+                        f"\U0001f4c8 Profit flotante: `${_sf:+.2f}`\n"
+                        f"\U0001f193 Margen libre: `${_sm:.2f}`\n"
+                        f"\U0001f4c2 Posiciones: `{len(_sp)}`{_so}\n"
+                        f"\U0001f4c5 Hoy: `{_sw}W / {_sl2}L` · P&L: `${_st:+.2f}`\n"
+                        f"\U0001f550 UTC: `{datetime.now(timezone.utc).strftime('%H:%M')}`"
+                    )
+                except Exception as _sx:
+                    log.debug("periodic summary failed: %s", _sx)
 
             # 1.5 monitor open paper trades (always, even if we won't open new)
             monitor = _monitor_paper_trades()
@@ -1058,8 +1154,66 @@ def main():
             if best is None or best["score"] < args.min_score:
                 log.info("no setup ≥ %d (best %s)", args.min_score,
                          best["score"] if best else "n/a")
+                if iteration % 6 == 0:
+                    _nt = sorted(
+                        [c for c in scan_log if "score" in c],
+                        key=lambda x: -int(x.get("score", 0))
+                    )[:5]
+                    _nl = []
+                    for _nc in _nt:
+                        _nl.append(
+                            f"  {_nc.get('symbol','')} {_nc.get('side','')} "
+                            f"score={_nc.get('score','')} {_nc.get('rec','')}"
+                        )
+                    _ns = NL.join(_nl) if _nl else "  ninguno"
+                    _tg_send(
+                        f"\U0001f50d *Sin señal* (iter {iteration})\n"
+                        f"Min score: `{args.min_score}` · Best: `{best['score'] if best else 'n/a'}`\n"
+                        f"Scanned: `{len(scannable)}` symbols\n"
+                        f"Top 5:{NL}{_ns}"
+                    )
                 _sleep(args.interval)
                 continue
+
+            # === GLOBAL HARD FILTERS (v3) ===
+            # Spread filter: reject if spread eats too much of SL distance
+            _gf_tick = trading.get_tick(best["symbol"])
+            if _gf_tick.get("ok") is not False:
+                _gf_spread = abs(float(_gf_tick.get("ask", 0)) - float(_gf_tick.get("bid", 0)))
+                _gf_sl_dist = abs(best["entry"] - best["sl"])
+                _gf_spread_pct = (_gf_spread / _gf_sl_dist * 100) if _gf_sl_dist > 0 else 999
+                if _gf_spread_pct > MAX_SPREAD_PCT_OF_R:
+                    log.info("SPREAD FILTER: %s %.1f%% > %.0f%% — skip",
+                             best["symbol"], _gf_spread_pct, MAX_SPREAD_PCT_OF_R)
+                    _audit({"iter": iteration, "skip": "SPREAD_TOO_HIGH",
+                            "symbol": best["symbol"], "spread_pct": round(_gf_spread_pct, 1)})
+                    _sleep(args.interval)
+                    continue
+
+            # Session filter: REMOVED — each strategy defines its own trading hours
+            # via strategy.hard_filter() -> base.is_in_trading_hours()
+            _gf_hour = datetime.now(timezone.utc).hour
+
+            # Strategy-specific hard filter
+            _active_strat = strat_engine.get_active_strategy()
+            if hasattr(best, 'get') and best.get("extra"):
+                # Build a mock signal for the hard filter
+                from strategies.base import Signal as _Sig
+                _mock = _Sig(
+                    symbol=best["symbol"], side=best["side"],
+                    entry=best["entry"], sl=best["sl"], tp=best["tp"],
+                    atr=best.get("atr", 0), score=best["score"],
+                    rec=best["rec"], breakdown=best.get("breakdown", {}),
+                    strategy_id=best.get("strategy_id", ""),
+                    extra=best.get("extra", {}),
+                )
+                _hf_pass, _hf_reason = _active_strat.hard_filter(_mock, _gf_tick)
+                if not _hf_pass:
+                    log.info("STRATEGY FILTER: %s %s — skip", best["symbol"], _hf_reason)
+                    _audit({"iter": iteration, "skip": "STRATEGY_FILTER",
+                            "symbol": best["symbol"], "reason": _hf_reason})
+                    _sleep(args.interval)
+                    continue
 
             # 3. size
             sym_info = _symbol_size_inputs(best["symbol"])

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,14 +27,21 @@ log = logging.getLogger("bot-bridge")
 
 _HERE = Path(__file__).resolve().parent
 _MCP_ROOT = _HERE.parent / "mcp-scaffolds" / "trading-mt5-mcp"
-_MCP_PYTHON = _MCP_ROOT / ".venv" / "Scripts" / "python.exe"
+# On Linux VPS: use Wine Python (MetaTrader5 is a Windows DLL)
+# On Windows dev: use the local .venv
+_IS_LINUX = sys.platform != "win32"
+if _IS_LINUX:
+    _WINE_PYTHON = r"C:\Program Files\Python311\python.exe"
+    _WINEPREFIX = "/opt/trading-bot/wine"
+else:
+    _MCP_PYTHON = _MCP_ROOT / ".venv" / "Scripts" / "python.exe"
 _MCP_ENV    = _MCP_ROOT / ".env"
 
 _PAPER_OPEN_FILE   = _MCP_ROOT / "paper_open.json"
 _PAPER_TRADES_FILE = _MCP_ROOT / "paper_trades.jsonl"
 _LAST_SCAN_FILE    = _MCP_ROOT / "last_scan.json"
 _AUDIT_LOG         = Path(os.path.expanduser(
-    os.environ.get("LOG_DIR", "~/mcp/logs"))) / "auto_trader.jsonl"
+    os.environ.get("LOG_DIR", "/opt/trading-bot/logs"))) / "auto_trader.jsonl"
 
 
 # --------------------------- helpers ---------------------------
@@ -66,15 +74,31 @@ def _read_jsonl_tail(path: Path, n: int) -> list:
 
 
 def _run_mcp(snippet: str, timeout: int = 30) -> dict:
-    """Run a python snippet inside the trading-mt5-mcp venv. Returns the
-    last printed JSON object, or ``{ok:false}`` on failure."""
-    if not _MCP_PYTHON.exists():
-        return {"ok": False, "reason": "MCP venv not found",
-                "detail": str(_MCP_PYTHON)}
+    """Run a python snippet inside the trading MCP environment. Returns the
+    last printed JSON object, or ``{ok:false}`` on failure.
+    On Linux: uses Wine Python (MetaTrader5 is a Windows DLL).
+    On Windows: uses .venv/Scripts/python.exe.
+    """
+    if _IS_LINUX:
+        cmd = ["wine", _WINE_PYTHON, "-c", snippet]
+        env = {
+            **os.environ,
+            "WINEPREFIX": _WINEPREFIX,
+            "WINEARCH": "win64",
+            "DISPLAY": os.environ.get("DISPLAY", ":99"),
+            "WINEDEBUG": "-all",
+        }
+    else:
+        if not _MCP_PYTHON.exists():
+            return {"ok": False, "reason": "MCP venv not found",
+                    "detail": str(_MCP_PYTHON)}
+        cmd = [str(_MCP_PYTHON), "-c", snippet]
+        env = None
     try:
         proc = subprocess.run(
-            [str(_MCP_PYTHON), "-c", snippet],
+            cmd,
             capture_output=True, text=True, timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "reason": "TIMEOUT", "timeout_s": timeout}
@@ -239,7 +263,7 @@ def get_config() -> dict:
                 continue
             k, v = line.split("=", 1)
             cfg[k.strip()] = v.strip()
-    safe = {k: v for k, v in cfg.items() if "PASSWORD" not in k.upper()}
+    safe = {k: ("***" if any(s in k.upper() for s in ("PASSWORD", "TOKEN", "SECRET")) else v) for k, v in cfg.items()}
     safe["__paths"] = {
         "mcp_root": str(_MCP_ROOT),
         "audit_log": str(_AUDIT_LOG),

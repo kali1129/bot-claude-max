@@ -1,0 +1,68 @@
+"""Multi-strategy engine registry.
+
+Import all concrete strategies and expose them via REGISTRY dict.
+The auto_trader reads the active strategy id from the state file
+and looks it up here.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Dict
+
+from .base import Strategy, Signal  # noqa: F401
+from .trend_rider import TrendRider
+from .mean_reverter import MeanReverter
+from .breakout_hunter import BreakoutHunter
+from .score_v3 import ScoreV3
+
+log = logging.getLogger("strategies")
+
+# All available strategies keyed by id
+REGISTRY: Dict[str, Strategy] = {
+    "trend_rider": TrendRider(),
+    "mean_reverter": MeanReverter(),
+    "breakout_hunter": BreakoutHunter(),
+    "score_v3": ScoreV3(),
+}
+
+DEFAULT_STRATEGY = "trend_rider"
+STATE_FILE = Path("/opt/trading-bot/state/strategy_config.json")
+
+
+def get_active_strategy() -> Strategy:
+    """Read the active strategy from state file. Falls back to default."""
+    try:
+        if STATE_FILE.exists():
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            sid = data.get("active_strategy", DEFAULT_STRATEGY)
+            if sid in REGISTRY:
+                return REGISTRY[sid]
+            log.warning("Unknown strategy '%s' in state file, using default", sid)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Failed to read strategy state: %s", exc)
+    return REGISTRY[DEFAULT_STRATEGY]
+
+
+def set_active_strategy(strategy_id: str) -> dict:
+    """Persist the active strategy choice. Returns status dict."""
+    if strategy_id not in REGISTRY:
+        return {"ok": False, "reason": "UNKNOWN_STRATEGY",
+                "available": list(REGISTRY.keys())}
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        STATE_FILE.write_text(json.dumps({
+            "active_strategy": strategy_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }), encoding="utf-8")
+        log.info("Active strategy set to '%s'", strategy_id)
+        return {"ok": True, "active": strategy_id}
+    except OSError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+def list_strategies() -> list:
+    """Return serialized list of all strategies for the API."""
+    return [s.to_dict() for s in REGISTRY.values()]

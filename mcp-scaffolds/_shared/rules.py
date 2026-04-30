@@ -15,8 +15,8 @@ MAX_DAILY_LOSS_PCT:     float = 999.0  # 2026-04-28: stress test mode by
                                         # effectively unreachable. Bot can
                                         # blow the demo balance — that's the
                                         # point of the stress test.
-MAX_OPEN_POSITIONS:     int   = 1
-MIN_RR:                 float = 2.0
+MAX_OPEN_POSITIONS:     int   = 3    # 2026-04-30: multi-strategy 24h test. Was 2.
+MIN_RR:                 float = 1.5    # 2026-04-30: lowered for 24h test. Was 2.0.
 MAX_CONSECUTIVE_LOSSES: int   = 999    # 2026-04-28: stress test. Was 3.
                                         # Anti-tilt removed for "test how
                                         # far the strategy goes" run.
@@ -27,8 +27,8 @@ MAX_TRADES_PER_DAY:     int   = 999  # 2026-04-28: raised by explicit user
                                       # in lib/guards.py is preserved as a
                                       # mechanism — only the cap is lifted
                                       # for this test window.
-BLOCKED_HOUR_START_UTC: int   = 22   # blackout: 22:00–07:00 UTC (NY close → London open)
-BLOCKED_HOUR_END_UTC:   int   = 7
+BLOCKED_HOUR_START_UTC: int   = 0    # 2026-04-30: disabled for 24h test   # blackout: 22:00–07:00 UTC (NY close → London open)
+BLOCKED_HOUR_END_UTC:   int   = 0    # 2026-04-30: disabled for 24h test
 
 
 @dataclass(frozen=True)

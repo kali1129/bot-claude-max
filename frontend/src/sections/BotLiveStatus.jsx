@@ -1,19 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import axios from "axios";
 import { toast } from "sonner";
-import {
-    Cpu,
-    Play,
-    Square,
-    RotateCw,
-    Terminal,
-    Radio,
-    Clock,
-    Target,
-    TrendingUp,
-    TrendingDown,
-    Pause,
-} from "lucide-react";
+import { Cpu, Play, Square, RotateCw, Terminal, Radio, Target, Pause,  } from "lucide-react";
 
 const TOKEN = process.env.REACT_APP_DASHBOARD_TOKEN || "";
 const authHeaders = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};

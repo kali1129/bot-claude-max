@@ -102,6 +102,74 @@ def bollinger(values: np.ndarray, period: int = 20, mult: float = 2.0):
     return out_upper, mid, out_lower
 
 
+
+
+def adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
+    """Average Directional Index (ADX). Measures trend strength (0-100).
+    ADX > 25 = trending, ADX < 20 = ranging."""
+    if len(close) < period + 2:
+        return np.full(len(close), np.nan)
+
+    # +DM / -DM
+    high_diff = np.diff(high)
+    low_diff = -np.diff(low)
+    plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0.0)
+    minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0.0)
+
+    # True Range
+    prev_close = close[:-1]
+    tr = np.maximum(high[1:] - low[1:],
+                    np.maximum(np.abs(high[1:] - prev_close),
+                               np.abs(low[1:] - prev_close)))
+
+    # Smooth with Wilder's method (same as EMA with alpha = 1/period)
+    def _wilder_smooth(arr, p):
+        out = np.full(len(arr), np.nan)
+        out[p - 1] = np.sum(arr[:p])
+        for i in range(p, len(arr)):
+            out[i] = out[i - 1] - out[i - 1] / p + arr[i]
+        return out
+
+    smooth_tr = _wilder_smooth(tr, period)
+    smooth_plus = _wilder_smooth(plus_dm, period)
+    smooth_minus = _wilder_smooth(minus_dm, period)
+
+    # +DI / -DI
+    plus_di = 100.0 * smooth_plus / np.where(smooth_tr > 0, smooth_tr, 1.0)
+    minus_di = 100.0 * smooth_minus / np.where(smooth_tr > 0, smooth_tr, 1.0)
+
+    # DX
+    di_sum = plus_di + minus_di
+    dx = 100.0 * np.abs(plus_di - minus_di) / np.where(di_sum > 0, di_sum, 1.0)
+
+    # ADX = Wilder smooth of DX
+    adx_out = np.full(len(close), np.nan)
+    # First ADX value: average of first 'period' DX values
+    dx_start = period - 1  # first valid DX index in the diff array
+    if dx_start + period <= len(dx):
+        first_valid = [dx[i] for i in range(dx_start, dx_start + period) if np.isfinite(dx[i])]
+        if first_valid:
+            adx_out[dx_start + period] = np.mean(first_valid)
+            for i in range(dx_start + period + 1, len(dx) + 1):
+                if i < len(adx_out) and i - 1 < len(dx) and np.isfinite(dx[i - 1]):
+                    adx_out[i] = (adx_out[i - 1] * (period - 1) + dx[i - 1]) / period
+
+    return adx_out
+
+
+def donchian(high: np.ndarray, low: np.ndarray, period: int = 20):
+    """Donchian Channel: highest high and lowest low over N periods.
+    Returns (upper, lower, middle) arrays."""
+    n = len(high)
+    upper = np.full(n, np.nan)
+    lower = np.full(n, np.nan)
+    for i in range(period, n):
+        upper[i] = float(np.max(high[i - period:i]))
+        lower[i] = float(np.min(low[i - period:i]))
+    middle = (upper + lower) / 2.0
+    return upper, lower, middle
+
+
 def indicators_snapshot(ohlcv: List[Dict]) -> dict:
     """Returns the latest value (and previous) of every indicator."""
     if len(ohlcv) < 2:

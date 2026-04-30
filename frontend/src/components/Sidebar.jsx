@@ -6,6 +6,10 @@ import {
     Sliders,
     Cog,
     BookOpenCheck,
+    Crosshair,
+    BarChart3,
+    FlaskConical,
+    Cpu,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -13,7 +17,11 @@ const NAV_ITEMS = [
     { id: "overview", label: "Plan",                 icon: LayoutDashboard,  code: "01" },
     { id: "control",  label: "Panel de Control",     icon: Sliders,          code: "02" },
     { id: "config",   label: "Configuración",        icon: Cog,              code: "03" },
-    { id: "journal",  label: "Diario de Operaciones", icon: BookOpenCheck,   code: "04" },
+    { id: "strategies", label: "Estrategias",         icon: Crosshair,        code: "04" },
+    { id: "metrics",    label: "Métricas Pro",          icon: BarChart3,        code: "05" },
+    { id: "backtest",   label: "Backtesting",           icon: FlaskConical,     code: "06" },
+    { id: "optimizer",  label: "An\u00e1lisis Avanzado",   icon: Cpu,              code: "07" },
+    { id: "journal",  label: "Diario de Operaciones", icon: BookOpenCheck,   code: "08" },
 ];
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;

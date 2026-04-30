@@ -60,7 +60,7 @@ def main():
 
     log.info("starting (interval=%ss, lookback=%sd, dashboard=%s)",
              args.interval, args.lookback,
-             os.environ.get("DASHBOARD_URL", "http://localhost:8001"))
+             os.environ.get("DASHBOARD_URL", "http://127.0.0.1:8000"))
 
     iteration = 0
     while _running:

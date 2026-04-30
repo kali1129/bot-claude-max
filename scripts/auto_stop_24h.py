@@ -14,7 +14,7 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-BACKEND = "http://localhost:8010/api"
+BACKEND = os.environ.get("BACKEND_URL", "http://127.0.0.1:8000") + "/api"
 
 
 def _get(path: str, default=None):
@@ -58,7 +58,7 @@ def main() -> int:
     today = mt5.get("today") or {}
     balance = acc.get("balance", "?")
     equity = acc.get("equity", "?")
-    starting_balance = 200.0  # known starting capital
+    starting_balance = float(os.environ.get("STARTING_BALANCE", "200.0"))  # from env
 
     closed = journal_stats.get("total_trades") or bot.get("closed_count", 0)
     wins = journal_stats.get("wins") or bot.get("wins", 0)

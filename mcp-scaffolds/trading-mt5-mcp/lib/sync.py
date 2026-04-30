@@ -75,7 +75,7 @@ def _prune_dedupe(state: dict) -> None:
 
 
 def _post(payload: dict) -> Optional[dict]:
-    url = os.environ.get("DASHBOARD_URL", "http://localhost:8001").rstrip("/")
+    url = os.environ.get("DASHBOARD_URL", "http://127.0.0.1:8000").rstrip("/")
     token = os.environ.get("DASHBOARD_TOKEN", "").strip()
     headers = {"Content-Type": "application/json"}
     if token:

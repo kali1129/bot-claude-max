@@ -13,6 +13,7 @@ from typing import List, Literal, Optional
 import json
 import logging
 import os
+import sys
 import secrets
 import uuid
 
@@ -428,7 +429,7 @@ async def research_trades(limit: int = 50):
     """
     from pathlib import Path as _P
     log_file = _P(os.path.expanduser(
-        os.environ.get("LOG_DIR", "~/mcp/logs"))) / "trade_research.jsonl"
+        os.environ.get("LOG_DIR", "/opt/trading-bot/logs"))) / "trade_research.jsonl"
 
     if not log_file.exists():
         return {"trades": [], "total": 0, "log_file": str(log_file)}
@@ -485,7 +486,7 @@ async def research_summary():
     """
     from pathlib import Path as _P
     log_file = _P(os.path.expanduser(
-        os.environ.get("LOG_DIR", "~/mcp/logs"))) / "trade_research.jsonl"
+        os.environ.get("LOG_DIR", "/opt/trading-bot/logs"))) / "trade_research.jsonl"
 
     if not log_file.exists():
         return {"empty": True, "log_file": str(log_file)}
@@ -630,6 +631,160 @@ async def research_summary():
     loss_r = [r for r, p in zip(rs, pnls) if p < 0]
     expectancy_r = round(sum(rs) / len(rs), 3) if rs else 0.0
 
+    # ── Phase 1: Pro Metrics ──────────────────────────────────────────
+    import math as _math
+    from collections import defaultdict as _defaultdict
+    from datetime import datetime as _dt
+
+    # Daily P&L for Sharpe/Sortino/equity curve
+    daily_pnl = _defaultdict(float)
+    daily_r = _defaultdict(float)
+    for tk, tdata in by_ticket.items():
+        o, c = tdata["open"], tdata["close"]
+        if not o or not c:
+            continue
+        close_ts = c.get("ts") or c.get("timestamp")
+        if not close_ts:
+            continue
+        try:
+            day_key = _dt.fromisoformat(str(close_ts).replace("Z", "+00:00")).strftime("%Y-%m-%d")
+        except Exception:
+            try:
+                day_key = _dt.utcfromtimestamp(float(close_ts)).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+        pnl_val = c.get("pnl_usd", 0.0) or 0.0
+        r_val = c.get("r_multiple", 0.0) or 0.0
+        daily_pnl[day_key] += pnl_val
+        daily_r[day_key] += r_val
+
+    daily_returns = [v for _, v in sorted(daily_pnl.items())]
+    daily_r_returns = [v for _, v in sorted(daily_r.items())]
+
+    # Sharpe Ratio (annualized, 252 trading days)
+    def _sharpe(returns, rf_daily=0.0):
+        if len(returns) < 2:
+            return None
+        mean_r = sum(returns) / len(returns) - rf_daily
+        std_r = (sum((x - sum(returns)/len(returns))**2 for x in returns) / (len(returns) - 1)) ** 0.5
+        if std_r == 0:
+            return None
+        return round(mean_r / std_r * (252 ** 0.5), 3)
+
+    # Sortino Ratio (only downside deviation)
+    def _sortino(returns, rf_daily=0.0):
+        if len(returns) < 2:
+            return None
+        mean_r = sum(returns) / len(returns) - rf_daily
+        downside = [min(0, x - rf_daily)**2 for x in returns]
+        dd = (sum(downside) / len(downside)) ** 0.5
+        if dd == 0:
+            return None
+        return round(mean_r / dd * (252 ** 0.5), 3)
+
+    # SQN (System Quality Number — Van Tharp)
+    def _sqn(r_multiples):
+        if len(r_multiples) < 10:
+            return None
+        mean_r = sum(r_multiples) / len(r_multiples)
+        std_r = (sum((x - mean_r)**2 for x in r_multiples) / (len(r_multiples) - 1)) ** 0.5
+        if std_r == 0:
+            return None
+        return round(mean_r / std_r * min(len(r_multiples), 100) ** 0.5, 3)
+
+    # Profit Factor
+    gross_profit = sum(p for p in pnls if p > 0)
+    gross_loss = abs(sum(p for p in pnls if p < 0))
+    profit_factor = round(gross_profit / gross_loss, 3) if gross_loss > 0 else None
+
+    # Max Drawdown (on equity curve)
+    equity_curve = []
+    cumulative = 0.0
+    for day_key in sorted(daily_pnl.keys()):
+        cumulative += daily_pnl[day_key]
+        equity_curve.append({"date": day_key, "equity": round(cumulative, 2)})
+
+    peak = 0.0
+    max_dd = 0.0
+    max_dd_pct = 0.0
+    for pt in equity_curve:
+        eq = pt["equity"]
+        if eq > peak:
+            peak = eq
+        dd = peak - eq
+        if dd > max_dd:
+            max_dd = dd
+        if peak > 0:
+            dd_pct = dd / peak * 100
+            if dd_pct > max_dd_pct:
+                max_dd_pct = dd_pct
+
+    # Calmar Ratio (annualized return / max drawdown)
+    n_days = len(daily_returns) if daily_returns else 1
+    total_return = sum(daily_returns) if daily_returns else 0
+    annualized_return = total_return / max(n_days, 1) * 252
+    calmar = round(annualized_return / max_dd, 3) if max_dd > 0 else None
+
+    # Consecutive wins/losses streaks
+    max_consec_wins = 0
+    max_consec_losses = 0
+    cur_wins = 0
+    cur_losses = 0
+    for p in pnls:
+        if p > 0:
+            cur_wins += 1
+            cur_losses = 0
+            if cur_wins > max_consec_wins:
+                max_consec_wins = cur_wins
+        elif p < 0:
+            cur_losses += 1
+            cur_wins = 0
+            if cur_losses > max_consec_losses:
+                max_consec_losses = cur_losses
+        else:
+            cur_wins = 0
+            cur_losses = 0
+
+    # Daily P&L heatmap data (for calendar view)
+    daily_pnl_heatmap = [{"date": k, "pnl": round(v, 2)} for k, v in sorted(daily_pnl.items())]
+
+    # Per-strategy breakdown
+    by_strategy = {}
+    for tk, tdata in by_ticket.items():
+        o, c = tdata["open"], tdata["close"]
+        if not o or not c:
+            continue
+        sid = o.get("strategy_id") or o.get("strategy") or "unknown"
+        s = by_strategy.setdefault(sid, {"n": 0, "wins": 0, "pnl": 0.0, "r_sum": 0.0})
+        pnl_val = c.get("pnl_usd", 0.0) or 0.0
+        r_val = c.get("r_multiple", 0.0) or 0.0
+        s["n"] += 1
+        s["pnl"] += pnl_val
+        s["r_sum"] += r_val
+        if pnl_val > 0:
+            s["wins"] += 1
+    for v in by_strategy.values():
+        v["win_rate_pct"] = round(v["wins"] / max(v["n"], 1) * 100, 1)
+        v["avg_r"] = round(v["r_sum"] / max(v["n"], 1), 3)
+        v["pnl"] = round(v["pnl"], 2)
+
+    pro_metrics = {
+        "sharpe_ratio": _sharpe(daily_returns),
+        "sortino_ratio": _sortino(daily_returns),
+        "sqn": _sqn(rs),
+        "profit_factor": profit_factor,
+        "gross_profit": round(gross_profit, 2),
+        "gross_loss": round(gross_loss, 2),
+        "max_drawdown_usd": round(max_dd, 2),
+        "max_drawdown_pct": round(max_dd_pct, 2),
+        "calmar_ratio": calmar,
+        "max_consecutive_wins": max_consec_wins,
+        "max_consecutive_losses": max_consec_losses,
+        "n_trading_days": len(daily_returns),
+        "avg_daily_pnl": round(sum(daily_returns) / max(len(daily_returns), 1), 2),
+    }
+    # ── End Phase 1 Pro Metrics ─────────────────────────────────────
+
     return {
         "empty": False,
         "log_file": str(log_file),
@@ -643,6 +798,10 @@ async def research_summary():
         "by_symbol": by_symbol,
         "by_hour_utc": by_hour,
         "by_exit_reason": by_exit_reason,
+        "by_strategy": by_strategy,
+        "pro_metrics": pro_metrics,
+        "equity_curve": equity_curve,
+        "daily_pnl_heatmap": daily_pnl_heatmap,
         "stats": {
             "pnl_usd": _stat(pnls),
             "r_multiple": _stat(rs),
@@ -889,6 +1048,148 @@ async def risk_calculate(inp: RiskCalcInput):
 # ----- Control Panel (MT5 status + Kill-switch + Sync trigger) -----
 
 import mt5_bridge  # noqa: E402
+
+# ============================================================================
+# Strategy engine endpoints (v3)
+# ============================================================================
+
+# Import strategy engine (lives in the trading-mt5-mcp tree)
+import importlib.util as _ilu
+_strat_path = Path(__file__).resolve().parent.parent / "mcp-scaffolds" / "trading-mt5-mcp"
+if str(_strat_path) not in sys.path:
+    sys.path.insert(0, str(_strat_path))
+# Pre-load analysis libs needed by strategies
+_analysis_dir = Path(__file__).resolve().parent.parent / "mcp-scaffolds" / "analysis-mcp" / "lib"
+if "analysis_lib" not in sys.modules:
+    import importlib
+    _apkg = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader("analysis_lib", loader=None, is_package=True))
+    _apkg.__path__ = [str(_analysis_dir)]
+    sys.modules["analysis_lib"] = _apkg
+    for _mn in ("indicators", "structure"):
+        _mpath = _analysis_dir / f"{_mn}.py"
+        if _mpath.exists():
+            _mspec = importlib.util.spec_from_file_location(f"analysis_lib.{_mn}", _mpath)
+            _mmod = importlib.util.module_from_spec(_mspec)
+            sys.modules[f"analysis_lib.{_mn}"] = _mmod
+            _mspec.loader.exec_module(_mmod)
+
+try:
+    import strategies as strat_engine
+    _STRAT_AVAILABLE = True
+except ImportError as _e:
+    logging.warning("Strategy engine not available: %s", _e)
+    _STRAT_AVAILABLE = False
+
+
+@app.get("/api/strategies")
+async def api_strategies():
+    """List all available strategies with theoretical + real performance."""
+    if not _STRAT_AVAILABLE:
+        return {"strategies": [], "error": "engine_not_loaded"}
+
+    strategies = strat_engine.list_strategies()
+    active = strat_engine.get_active_strategy()
+
+    # Compute real stats per strategy from research log
+    log_path = Path(os.path.expanduser(
+        os.environ.get("LOG_DIR", "/opt/trading-bot/logs"))) / "trade_research.jsonl"
+    real_stats = {}
+    if log_path.exists():
+        try:
+            events = {}
+            with open(log_path, "r") as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                        evt = rec.get("event")
+                        if evt == "open":
+                            ticket = rec.get("ticket")
+                            events[ticket] = {"open": rec, "close": None}
+                        elif evt == "close":
+                            ticket = rec.get("ticket")
+                            if ticket in events:
+                                events[ticket]["close"] = rec
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+            # Group closed trades by strategy_id
+            by_strat = {}
+            for ticket, data in events.items():
+                if not data.get("close"):
+                    continue
+                sid = data["open"].get("strategy_id", "score_v2_legacy")
+                if sid not in by_strat:
+                    by_strat[sid] = {"wins": 0, "losses": 0, "total_r": 0.0,
+                                     "total_pnl": 0.0, "trades": []}
+                c = data["close"]
+                pnl = float(c.get("pnl_usd", 0))
+                r = float(c.get("r_multiple", 0))
+                by_strat[sid]["total_r"] += r
+                by_strat[sid]["total_pnl"] += pnl
+                if pnl > 0:
+                    by_strat[sid]["wins"] += 1
+                elif pnl < 0:
+                    by_strat[sid]["losses"] += 1
+                by_strat[sid]["trades"].append({
+                    "ticket": ticket,
+                    "symbol": data["open"].get("symbol"),
+                    "pnl": pnl,
+                    "r": r,
+                })
+
+            for sid, stats in by_strat.items():
+                n = stats["wins"] + stats["losses"]
+                real_stats[sid] = {
+                    "trades": n,
+                    "wins": stats["wins"],
+                    "losses": stats["losses"],
+                    "win_rate": round(stats["wins"] / n * 100, 1) if n > 0 else 0,
+                    "avg_r": round(stats["total_r"] / n, 3) if n > 0 else 0,
+                    "total_pnl": round(stats["total_pnl"], 2),
+                    "expectancy": round(stats["total_r"] / n, 3) if n > 0 else 0,
+                }
+        except Exception as e:
+            logging.warning("Strategy stats computation failed: %s", e)
+
+    # Merge real stats into strategy dicts
+    for s in strategies:
+        sid = s["id"]
+        s["real"] = real_stats.get(sid, {
+            "trades": 0, "wins": 0, "losses": 0,
+            "win_rate": 0, "avg_r": 0, "total_pnl": 0, "expectancy": 0,
+        })
+        s["active"] = (active.id == sid)
+
+    # Include legacy trades (before strategy engine) under a special key
+    legacy = real_stats.get("score_v2_legacy", real_stats.get("unknown", None))
+    if legacy:
+        strategies.append({
+            "id": "score_v2_legacy",
+            "name": "Score v2 (Legacy)",
+            "description": "Sistema original antes del motor multi-estrategia.",
+            "type": "trend",
+            "color": "gray",
+            "theoretical": {"win_rate": 30, "rr": 2.5, "expectancy": -0.10},
+            "params": {"min_score": 70, "sl_atr_mult": 1.0, "tp_atr_mult": 2.5},
+            "real": legacy,
+            "active": False,
+        })
+
+    return {"strategies": strategies, "active": active.id}
+
+
+@app.post("/api/strategies/{strategy_id}/activate")
+async def api_activate_strategy(strategy_id: str, _=Depends(require_token)):
+    """Switch the active trading strategy."""
+    if not _STRAT_AVAILABLE:
+        raise HTTPException(503, "Strategy engine not loaded")
+    result = strat_engine.set_active_strategy(strategy_id)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("reason", "unknown error"))
+    return result
+
+
 import bot_bridge  # noqa: E402
 import process_manager  # noqa: E402
 import telegram_notifier  # noqa: E402
@@ -932,6 +1233,7 @@ class ExecuteTradePayload(BaseModel):
 
 
 class BotConfigPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
     updates: dict = Field(default_factory=dict)
 
 
@@ -1035,7 +1337,18 @@ async def bot_config_get():
 
 @api_router.post("/bot/config", dependencies=[Depends(require_token)])
 async def bot_config_set(payload: BotConfigPayload):
-    return bot_bridge.set_config(payload.updates)
+    updates = payload.updates
+    if not updates:
+        extras = payload.model_extra or {}
+        # Handle {"key": "K", "value": "V"} shorthand
+        if "key" in extras and "value" in extras and len(extras) == 2:
+            updates = {str(extras["key"]): str(extras["value"])}
+        elif extras:
+            updates = {k: str(v) for k, v in extras.items()}
+    if not updates:
+        return {"ok": False, "reason": "NO_UPDATES",
+                "detail": "Send {\"updates\": {\"KEY\": \"VALUE\"}} or flat {\"KEY\": \"VALUE\"}"}
+    return bot_bridge.set_config(updates)
 
 
 # ----- MT5 credentials (write to .env, gitignored) -----
@@ -1192,6 +1505,17 @@ def _signal_fn_from_spec(spec: Optional[dict]):
             return {"direction": "LONG", "atr": atr, "score": 1.0}
         return _fn
 
+    # Strategy-based signals (Phase 2)
+    if kind == "strategy":
+        strategy_id = str(spec.get("strategy_id", "trend_rider"))
+        try:
+            from bot_lib.backtest.adapter import strategy_signal_fn
+            return strategy_signal_fn(strategy_id)
+        except Exception as exc:
+            import logging
+            logging.getLogger("backtest").warning("strategy signal_fn failed: %s", exc)
+            pass
+
     # Default: always_flat
     def _flat(ohlcv):
         return {"direction": "FLAT", "atr": 0.0}
@@ -1213,6 +1537,112 @@ def backtest_run(payload: BacktestRunPayload):
     )
 
 
+@api_router.get("/backtest/strategies")
+async def list_backtest_strategies():
+    """List available strategies for backtesting with their default configs."""
+    try:
+        from bot_lib.backtest.adapter import BACKTEST_STRATEGIES
+        return {"strategies": BACKTEST_STRATEGIES}
+    except ImportError:
+        return {"strategies": {
+            "trend_rider": {"name": "Trend Rider", "default_config": {"sl_atr_mult": 1.5, "tp_atr_mult": 3.0}},
+            "mean_reverter": {"name": "Mean Reverter", "default_config": {"sl_atr_mult": 1.0, "tp_atr_mult": 2.0}},
+            "breakout_hunter": {"name": "Breakout Hunter", "default_config": {"sl_atr_mult": 2.0, "tp_atr_mult": 4.0}},
+            "score_v3": {"name": "Score v3", "default_config": {"sl_atr_mult": 1.5, "tp_atr_mult": 2.5}},
+        }}
+
+
+@api_router.post("/backtest/strategy", dependencies=[Depends(require_token)])
+async def backtest_with_strategy(payload: dict):
+    """Convenience endpoint: run backtest with a named strategy + synthetic data.
+
+    Accepts: strategy_id, symbol (optional), bars (optional), config (optional).
+    Generates synthetic OHLCV if no data provided.
+    """
+    strategy_id = payload.get("strategy_id", "trend_rider")
+    bars_count = int(payload.get("bars", 1000))
+    symbol = payload.get("symbol", "EURUSD")
+    user_config = payload.get("config", {})
+
+    # Try to get strategy defaults
+    try:
+        from bot_lib.backtest.adapter import BACKTEST_STRATEGIES, strategy_signal_fn
+        strat_info = BACKTEST_STRATEGIES.get(strategy_id)
+        if not strat_info:
+            return JSONResponse(status_code=400, content={
+                "error": "Unknown strategy: {}".format(strategy_id),
+                "available": list(BACKTEST_STRATEGIES.keys()),
+            })
+        defaults = strat_info["default_config"]
+    except ImportError:
+        defaults = {"sl_atr_mult": 1.5, "tp_atr_mult": 2.5, "min_score": 0.5}
+        from bot_lib.backtest.adapter import strategy_signal_fn
+
+    # Generate synthetic OHLCV
+    import random
+    random.seed(42 + hash(strategy_id) % 1000)
+    base_price = 1.0800
+    if "JPY" in symbol:
+        base_price = 150.0
+    elif "GBP" in symbol:
+        base_price = 1.2600
+    elif "XAU" in symbol:
+        base_price = 2350.0
+    elif "BTC" in symbol:
+        base_price = 63000.0
+
+    price = base_price
+    ohlcv = []
+    for idx in range(bars_count):
+        volatility = price * 0.0008
+        o = price
+        h = o + abs(random.gauss(0, volatility))
+        l = o - abs(random.gauss(0, volatility))
+        c = o + random.gauss(0, volatility * 0.5)
+        price = c
+        hour = idx % 24
+        day = idx // 24
+        ohlcv.append({
+            "time": "2026-01-{:02d}T{:02d}:00:00+00:00".format(max(1, day % 28 + 1), hour),
+            "open": round(o, 5),
+            "high": round(max(o, h, c), 5),
+            "low": round(min(o, l, c), 5),
+            "close": round(c, 5),
+            "volume": random.randint(100, 5000),
+        })
+
+    # Merge config
+    from bot_lib.backtest.engine import BacktestConfig
+    cfg = BacktestConfig(
+        initial_balance=float(user_config.get("initial_balance", 800.0)),
+        risk_per_trade_pct=float(user_config.get("risk_per_trade_pct", 1.0)),
+        sl_atr_mult=float(user_config.get("sl_atr_mult", defaults.get("sl_atr_mult", 1.5))),
+        tp_atr_mult=float(user_config.get("tp_atr_mult", defaults.get("tp_atr_mult", 2.5))),
+        commission_per_trade=float(user_config.get("commission", 0.10)),
+        slippage_pct=float(user_config.get("slippage_pct", 0.0001)),
+        warmup_bars=55,
+        max_open_positions=1,
+        min_score=float(user_config.get("min_score", defaults.get("min_score", 0.5))),
+    )
+
+    signal_fn = strategy_signal_fn(strategy_id)
+    result = _run_backtest(ohlcv=ohlcv, signal_fn=signal_fn, config=cfg)
+
+    # Add equity curve
+    if result.get("ok") and result.get("trades"):
+        equity = cfg.initial_balance
+        eq_curve = [{"trade": 0, "equity": equity}]
+        for i, t in enumerate(result["trades"]):
+            equity += t["pnl"]
+            eq_curve.append({"trade": i + 1, "equity": round(equity, 2)})
+        result["equity_curve"] = eq_curve
+
+    result["strategy"] = strategy_id
+    result["symbol"] = symbol
+    result["data_source"] = "synthetic"
+    return result
+
+
 class TelegramCommandPayload(BaseModel):
     """Inputs for POST /api/telegram/command."""
 
@@ -1225,32 +1655,209 @@ class TelegramCommandPayload(BaseModel):
 
 
 @api_router.post("/telegram/command", dependencies=[Depends(require_token)])
-def telegram_command(payload: TelegramCommandPayload):
-    """Dispatch a Telegram-style operator command through the policy gate.
+async def telegram_command(payload: dict, db=Depends(get_db)):
+    """Handle interactive Telegram commands: /status, /profit, /daily, /forcesell."""
+    cmd = payload.get("command", "").strip().lower()
 
-    Allowed user IDs come from env `TELEGRAM_ALLOWED_USER_IDS` (comma-separated).
-    Handlers default to safe stubs; a production wiring step replaces them with
-    real bridges to risk-mcp / trading-mt5-mcp.
+    if cmd in ("/status", "status"):
+        items = await db.trades.find({"status": "open"}, {"_id": 0}).to_list(50)
+        total_pnl = sum(t.get("pnl_usd", 0) or 0 for t in items)
+        msg_lines = [
+            "\U0001f4ca *Estado del Bot*",
+            "Posiciones abiertas: `{}`".format(len(items)),
+            "P&L flotante: `${:+.2f}`".format(total_pnl),
+        ]
+        for t in items[:5]:
+            sym = t.get("symbol", "?")
+            side = t.get("side", "?")
+            pnl = t.get("pnl_usd", 0) or 0
+            msg_lines.append("  \u2022 `{}` {} \u2192 ${:+.2f}".format(sym, side, pnl))
+        msg = "\n".join(msg_lines)
+        telegram_notifier.send(msg)
+        return {"ok": True, "message": msg}
+
+    elif cmd in ("/profit", "profit"):
+        items = await db.trades.find({}, {"_id": 0}).to_list(2000)
+        closed = [t for t in items if t.get("status") != "open"]
+        total_pnl = sum(t.get("pnl_usd", 0) or 0 for t in closed)
+        wins = len([t for t in closed if (t.get("pnl_usd", 0) or 0) > 0])
+        losses = len([t for t in closed if (t.get("pnl_usd", 0) or 0) < 0])
+        wr = (wins / len(closed) * 100) if closed else 0
+        msg = "\U0001f4b0 *Resumen de Profit*\nTotal trades: `{}`\nWins: `{}` | Losses: `{}`\nWin Rate: `{:.1f}%`\nP&L Total: *${:+.2f}*".format(
+            len(closed), wins, losses, wr, total_pnl
+        )
+        telegram_notifier.send(msg)
+        return {"ok": True, "message": msg}
+
+    elif cmd in ("/daily", "daily"):
+        from datetime import datetime as _dt2, timezone as _tz2
+        today = _dt2.now(_tz2.utc).strftime("%Y-%m-%d")
+        items = await db.trades.find({"date": today}, {"_id": 0}).to_list(100)
+        closed = [t for t in items if t.get("status") != "open"]
+        today_pnl = sum(t.get("pnl_usd", 0) or 0 for t in closed)
+        wins = len([t for t in closed if (t.get("pnl_usd", 0) or 0) > 0])
+        losses = len([t for t in closed if (t.get("pnl_usd", 0) or 0) < 0])
+        msg = "\U0001f4c5 *P&L de Hoy* ({})\nTrades cerrados: `{}`\nWins: `{}` | Losses: `{}`\nP&L Hoy: *${:+.2f}*".format(
+            today, len(closed), wins, losses, today_pnl
+        )
+        telegram_notifier.send(msg)
+        return {"ok": True, "message": msg}
+
+    elif cmd.startswith(("/forcesell", "forcesell")):
+        parts = cmd.split()
+        if len(parts) < 2:
+            return {"ok": False, "error": "Uso: /forcesell <ticket>"}
+        ticket = parts[1]
+        msg = "\u26a0\ufe0f Force-sell del ticket `{}` solicitado.".format(ticket)
+        telegram_notifier.send(msg)
+        return {"ok": True, "message": msg, "ticket": ticket, "action": "force_close_requested"}
+
+    else:
+        available = ["/status", "/profit", "/daily", "/forcesell <ticket>"]
+        return {"ok": False, "error": "Comando desconocido: {}".format(cmd), "available": available}
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 3: Optimization, Walk-Forward, Monte Carlo
+# ═══════════════════════════════════════════════════════════════════
+
+@api_router.post("/optimize/run", dependencies=[Depends(require_token)])
+async def optimize_run(payload: dict):
+    """Run Optuna hyperparameter optimization for a strategy.
+
+    Accepts: strategy_id, bars (optional, default 2000), n_trials (optional, default 50),
+    metric (optional: expectancy|sharpe|profit_factor|total_pnl|win_rate)
     """
-    allowed_raw = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "")
-    allowed = tuple(s.strip() for s in allowed_raw.split(",") if s.strip())
+    import asyncio
+    from bot_lib.backtest.optimizer import optimize_strategy
 
-    request = _CommandRequest.from_mapping(payload.model_dump())
-    return _dispatch_command(
-        request,
-        handlers=_stub_handlers(),
-        allowed_user_ids=allowed,
+    strategy_id = payload.get("strategy_id", "trend_rider")
+    bars_count = int(payload.get("bars", 2000))
+    n_trials = min(int(payload.get("n_trials", 50)), 200)
+    metric = payload.get("metric", "expectancy")
+
+    # Generate synthetic OHLCV
+    ohlcv = _generate_ohlcv(payload.get("symbol", "EURUSD"), bars_count)
+
+    # Run in thread pool to not block event loop
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: optimize_strategy(strategy_id, ohlcv, n_trials=n_trials, metric=metric)
     )
+    return result
 
 
-@api_router.get("/quality/score")
-def quality_score():
-    """Return a unified quality / readiness report from selfcheck.
+@api_router.post("/optimize/walkforward", dependencies=[Depends(require_token)])
+async def walk_forward_endpoint(payload: dict):
+    """Run walk-forward analysis for a strategy.
 
-    Useful for the dashboard: aggregates env, rules, kill-switch, and
-    backend bind checks into one rating with traffic-light status.
+    Accepts: strategy_id, bars (optional, default 3000), n_splits (optional, default 5)
     """
-    return _run_selfcheck()
+    import asyncio
+    from bot_lib.backtest.optimizer import walk_forward
+
+    strategy_id = payload.get("strategy_id", "trend_rider")
+    bars_count = int(payload.get("bars", 3000))
+    n_splits = min(int(payload.get("n_splits", 5)), 10)
+
+    ohlcv = _generate_ohlcv(payload.get("symbol", "EURUSD"), bars_count)
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: walk_forward(strategy_id, ohlcv, n_splits=n_splits)
+    )
+    return result
+
+
+@api_router.post("/optimize/montecarlo", dependencies=[Depends(require_token)])
+async def monte_carlo_endpoint(payload: dict):
+    """Run Monte Carlo simulation on trade history.
+
+    Accepts: n_simulations (default 1000), n_trades (optional), initial_balance (default 800)
+    If no trade data provided, reads from research log.
+    """
+    from bot_lib.backtest.optimizer import monte_carlo
+    from pathlib import Path as _P
+
+    n_sims = min(int(payload.get("n_simulations", 1000)), 5000)
+    n_trades = payload.get("n_trades")
+    if n_trades is not None:
+        n_trades = int(n_trades)
+    initial_balance = float(payload.get("initial_balance", 800.0))
+
+    # Get trade P&Ls from research log
+    trade_pnls = []
+    log_file = _P(os.path.expanduser(
+        os.environ.get("LOG_DIR", "/opt/trading-bot/logs"))) / "trade_research.jsonl"
+
+    if log_file.exists():
+        for line in log_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                if rec.get("event") == "close":
+                    pnl = rec.get("pnl_usd")
+                    if pnl is not None:
+                        trade_pnls.append(float(pnl))
+            except Exception:
+                continue
+
+    # If provided in payload, use those
+    if payload.get("trade_pnls"):
+        trade_pnls = [float(p) for p in payload["trade_pnls"]]
+
+    if len(trade_pnls) < 3:
+        return {"error": "Need at least 3 closed trades for Monte Carlo. Currently: {}".format(len(trade_pnls))}
+
+    result = monte_carlo(
+        trade_pnls=trade_pnls,
+        n_simulations=n_sims,
+        n_trades=n_trades,
+        initial_balance=initial_balance,
+    )
+    return result
+
+
+def _generate_ohlcv(symbol: str = "EURUSD", bars: int = 1000) -> list:
+    """Generate synthetic OHLCV data for backtesting/optimization."""
+    import random as _rng
+    _rng.seed(42 + hash(symbol) % 1000)
+    base_price = 1.0800
+    if "JPY" in symbol:
+        base_price = 150.0
+    elif "GBP" in symbol:
+        base_price = 1.2600
+    elif "XAU" in symbol:
+        base_price = 2350.0
+    elif "BTC" in symbol:
+        base_price = 63000.0
+
+    price = base_price
+    ohlcv = []
+    for idx in range(bars):
+        volatility = price * 0.0008
+        o = price
+        h = o + abs(_rng.gauss(0, volatility))
+        l = o - abs(_rng.gauss(0, volatility))
+        c = o + _rng.gauss(0, volatility * 0.5)
+        price = c
+        hour = idx % 24
+        day = idx // 24
+        ohlcv.append({
+            "time": "2026-01-{:02d}T{:02d}:00:00+00:00".format(max(1, day % 28 + 1), hour),
+            "open": round(o, 5),
+            "high": round(max(o, h, c), 5),
+            "low": round(min(o, l, c), 5),
+            "close": round(c, 5),
+            "volume": _rng.randint(100, 5000),
+        })
+    return ohlcv
 
 
 app.include_router(api_router)

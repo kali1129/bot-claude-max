@@ -21,18 +21,7 @@ import {
     ResponsiveContainer,
     ReferenceLine,
 } from "recharts";
-import {
-    Cpu,
-    Wallet,
-    TrendingUp,
-    TrendingDown,
-    ShieldCheck,
-    AlertTriangle,
-    Pause,
-    Radio,
-    Target,
-    Activity,
-} from "lucide-react";
+import { Cpu, Wallet, ShieldCheck, AlertTriangle, Pause, Radio, Activity,  } from "lucide-react";
 
 const TICK_MS = 3000;
 const MAX_SAMPLES = 200;          // ~10 min at 3s/sample

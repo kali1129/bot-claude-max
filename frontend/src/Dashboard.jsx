@@ -7,6 +7,10 @@ import Overview from "./sections/Overview";
 import ControlPanel from "./sections/ControlPanel";
 import ConfigPanel from "./sections/ConfigPanel";
 import TradeJournal from "./sections/TradeJournal";
+import Strategies from "./sections/Strategies";
+import ProMetrics from "./sections/ProMetrics";
+import Backtest from "./sections/Backtest";
+import Optimizer from "./sections/Optimizer";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -52,7 +56,7 @@ export default function Dashboard() {
     }, [fetchPlan, fetchStats, fetchBotConfig]);
 
     useEffect(() => {
-        const ids = ["live", "overview", "control", "config", "journal"];
+        const ids = ["live", "overview", "control", "config", "strategies", "metrics", "backtest", "optimizer", "journal"];
         const observer = new IntersectionObserver(
             (entries) => {
                 entries.forEach((entry) => {
@@ -104,6 +108,10 @@ export default function Dashboard() {
                             fetchBotConfig();
                         }}
                     />
+                    <Strategies api={API} />
+                    <ProMetrics api={API} />
+                    <Backtest api={API} />
+                    <Optimizer api={API} />
                     <TradeJournal
                         api={API}
                         strategies={planData.strategies}

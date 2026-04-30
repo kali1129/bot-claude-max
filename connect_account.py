@@ -25,7 +25,7 @@ import urllib.error
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / "mcp-scaffolds" / "trading-mt5-mcp" / ".env"
-DASHBOARD = "http://localhost:8001"
+DASHBOARD = os.environ.get("DASHBOARD_URL", "http://127.0.0.1:8000")
 
 
 def _read_env() -> dict:

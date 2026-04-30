@@ -1,3 +1,5 @@
+
+
 """Pre-trade guards. Each guard takes a context dict and returns either None
 (pass) or a dict ``{"reason": "...", "detail": "..."}`` to reject.
 
@@ -32,6 +34,27 @@ def _max_lots() -> float:
         return float(raw)
     except ValueError:
         return 0.5
+
+
+# ── Phase 1 imports ─────────────────────────────────────────────
+import json as _json
+import time as _time
+from pathlib import Path as _Path
+
+# ── Correlated pairs map (Phase 1) ──────────────────────────────
+CORRELATED_PAIRS = {
+    "EURUSD": ["GBPUSD", "EURGBP", "EURJPY"],
+    "GBPUSD": ["EURUSD", "EURGBP", "GBPJPY"],
+    "USDJPY": ["EURJPY", "GBPJPY", "CADJPY"],
+    "EURJPY": ["USDJPY", "EURUSD", "GBPJPY"],
+    "GBPJPY": ["USDJPY", "GBPUSD", "EURJPY"],
+    "AUDUSD": ["NZDUSD", "AUDJPY"],
+    "NZDUSD": ["AUDUSD", "NZDJPY"],
+    "USDCAD": ["USDCHF", "CADJPY"],
+    "USDCHF": ["USDCAD", "EURUSD"],
+    "EURGBP": ["EURUSD", "GBPUSD"],
+    "CADJPY": ["USDJPY", "USDCAD"],
+}
 
 
 def guard_sl_tp_required(ctx: dict) -> Optional[dict]:
@@ -163,6 +186,173 @@ def guard_risk_dollars(ctx: dict) -> Optional[dict]:
 
 
 # Order matters: cheapest checks first, then geometry, then dollar math.
+
+# ── Phase 1 Guards ──────────────────────────────────────────────
+
+def guard_correlation(ctx: dict):
+    """Block opening a position if we already have a same-direction
+    position on a correlated pair. Uses open_positions from ctx."""
+    symbol = ctx.get("symbol", "")
+    direction = ctx.get("direction", "")
+    open_positions = ctx.get("open_positions", [])
+
+    correlated = CORRELATED_PAIRS.get(symbol, [])
+    if not correlated or not open_positions:
+        return None
+
+    for pos in open_positions:
+        pos_sym = pos.get("symbol", "")
+        pos_dir = pos.get("direction", "") or pos.get("type", "")
+        # Normalize direction
+        pos_dir_norm = "BUY" if "BUY" in str(pos_dir).upper() else "SELL" if "SELL" in str(pos_dir).upper() else ""
+        dir_norm = "BUY" if "BUY" in str(direction).upper() or "LONG" in str(direction).upper() else "SELL"
+
+        if pos_sym in correlated and pos_dir_norm == dir_norm:
+            return {
+                "reason": "CORRELATED_PAIR",
+                "detail": f"{symbol} {dir_norm} blocked: already have {pos_sym} {pos_dir_norm} (correlated)",
+            }
+    return None
+
+
+def guard_equity_drawdown(ctx: dict):
+    """Block all new trades if account equity has dropped more than
+    MAX_EQUITY_DD_PCT from its peak. Peak tracked in state file."""
+    max_dd_pct = float(os.environ.get("MAX_EQUITY_DD_PCT", "10.0"))
+    state_file = _Path(os.environ.get("STATE_DIR", "/opt/trading-bot/state")) / "equity_peak.json"
+
+    equity = ctx.get("equity") or ctx.get("account_equity")
+    if equity is None or equity <= 0:
+        return None  # Can't check without equity info
+
+    # Load or init peak
+    peak = equity
+    try:
+        if state_file.exists():
+            data = _json.loads(state_file.read_text())
+            peak = max(data.get("peak", equity), equity)
+    except Exception:
+        pass
+
+    # Save new peak
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(_json.dumps({"peak": peak, "last_equity": equity}))
+    except Exception:
+        pass
+
+    if peak > 0:
+        dd_pct = (peak - equity) / peak * 100
+        if dd_pct >= max_dd_pct:
+            return {
+                "reason": "EQUITY_DRAWDOWN",
+                "detail": f"Equity ${equity:.2f} is {dd_pct:.1f}% below peak ${peak:.2f} (max allowed: {max_dd_pct}%)",
+            }
+    return None
+
+
+def guard_cooldown_after_losses(ctx: dict):
+    """After N consecutive losses, pause trading for M minutes.
+    Env: COOLDOWN_AFTER_LOSSES (default 3), COOLDOWN_MINUTES (default 30)."""
+    consec_threshold = int(os.environ.get("COOLDOWN_AFTER_LOSSES", "3"))
+    cooldown_min = int(os.environ.get("COOLDOWN_MINUTES", "30"))
+    state_file = _Path(os.environ.get("STATE_DIR", "/opt/trading-bot/state")) / "loss_cooldown.json"
+
+    # Check if we're in cooldown
+    try:
+        if state_file.exists():
+            data = _json.loads(state_file.read_text())
+            cooldown_until = data.get("cooldown_until", 0)
+            if _time.time() < cooldown_until:
+                remaining = int((cooldown_until - _time.time()) / 60)
+                return {
+                    "reason": "LOSS_COOLDOWN",
+                    "detail": f"Cooling down after {consec_threshold} consecutive losses. {remaining} min remaining.",
+                }
+    except Exception:
+        pass
+
+    # Check recent trades for consecutive losses
+    recent_results = ctx.get("recent_results", [])
+    if not recent_results:
+        return None
+
+    consec = 0
+    for r in recent_results:
+        pnl = r.get("pnl", 0) if isinstance(r, dict) else r
+        if pnl < 0:
+            consec += 1
+        else:
+            break
+
+    if consec >= consec_threshold:
+        # Enter cooldown
+        cooldown_until = _time.time() + cooldown_min * 60
+        try:
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(_json.dumps({
+                "cooldown_until": cooldown_until,
+                "triggered_at": _time.time(),
+                "consecutive_losses": consec,
+            }))
+        except Exception:
+            pass
+        return {
+            "reason": "LOSS_COOLDOWN",
+            "detail": f"{consec} consecutive losses detected. Entering {cooldown_min}-minute cooldown.",
+        }
+    return None
+
+
+def guard_low_profit_pair(ctx: dict):
+    """Block pairs that have shown negative avg R over recent trades.
+    Reads from trade_research.jsonl if available."""
+    min_trades = int(os.environ.get("LOW_PROFIT_MIN_TRADES", "5"))
+    min_avg_r = float(os.environ.get("LOW_PROFIT_MIN_AVG_R", "-0.3"))
+    symbol = ctx.get("symbol", "")
+
+    log_file = _Path(os.environ.get("LOG_DIR", "/opt/trading-bot/logs")) / "trade_research.jsonl"
+    if not log_file.exists():
+        return None
+
+    # Parse recent closed trades for this symbol
+    symbol_rs = []
+    try:
+        lines = log_file.read_text(encoding="utf-8").splitlines()
+        # Read last 500 lines max for performance
+        for line in lines[-500:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = _json.loads(line)
+            except Exception:
+                continue
+            if rec.get("event") != "close":
+                continue
+            if rec.get("symbol") != symbol:
+                continue
+            r = rec.get("r_multiple")
+            if r is not None:
+                symbol_rs.append(float(r))
+    except Exception:
+        return None
+
+    if len(symbol_rs) < min_trades:
+        return None
+
+    # Check last N trades
+    recent = symbol_rs[-20:]  # last 20 closed trades on this symbol
+    avg_r = sum(recent) / len(recent)
+
+    if avg_r < min_avg_r:
+        return {
+            "reason": "LOW_PROFIT_PAIR",
+            "detail": f"{symbol} avg R = {avg_r:.3f} over last {len(recent)} trades (threshold: {min_avg_r})",
+        }
+    return None
+
+
 GUARDS = [
     guard_sl_tp_required,
     guard_blocked_hour,
@@ -174,6 +364,11 @@ GUARDS = [
     guard_rr,
     guard_sl_tp_side,
     guard_risk_dollars,
+    # Phase 1 guards
+    guard_correlation,
+    guard_equity_drawdown,
+    guard_cooldown_after_losses,
+    guard_low_profit_pair,
 ]
 
 

@@ -128,7 +128,7 @@ def _check_rules_module() -> list[dict[str, Any]]:
 
 def _check_halt_path() -> list[dict[str, Any]]:
     """Check that the kill-switch file path is writable."""
-    halt_path = Path(os.environ.get("HALT_FILE", str(Path.home() / "mcp" / ".HALT")))
+    halt_path = Path(os.environ.get("HALT_FILE", "/opt/trading-bot/state/.HALT"))
     parent = halt_path.parent
     try:
         parent.mkdir(parents=True, exist_ok=True)

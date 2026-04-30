@@ -14,16 +14,19 @@ import {
 } from "recharts";
 import ResearchLog from "./ResearchLog";
 
+const TOKEN = process.env.REACT_APP_DASHBOARD_TOKEN || "";
+const authHeaders = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+
 const COMMON_SYMBOLS = [
     "EURUSD",
     "GBPUSD",
     "USDJPY",
+    "USDCHF",
+    "AUDUSD",
     "XAUUSD",
     "NAS100",
     "US30",
     "DAX",
-    "BTCUSD",
-    "ETHUSD",
 ];
 
 function emptyForm(strategies, today) {
@@ -80,14 +83,14 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
                 pnl_usd: parseFloat(form.pnl_usd || 0),
                 r_multiple: parseFloat(form.r_multiple || 0),
             };
-            await axios.post(`${api}/journal`, payload);
+            await axios.post(`${api}/journal`, payload, { headers: authHeaders });
             toast.success("Trade registrado");
             setForm(emptyForm(strategies, today));
             setShowForm(false);
             await load();
             onMutated?.();
         } catch (e) {
-            toast.error("Error guardando trade");
+            toast.error(`Error guardando trade: ${e.response?.data?.detail || e.message}`);
         } finally {
             setSubmitting(false);
         }
@@ -96,12 +99,12 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
     const remove = async (id) => {
         if (!window.confirm("¿Borrar este trade del diario?")) return;
         try {
-            await axios.delete(`${api}/journal/${id}`);
+            await axios.delete(`${api}/journal/${id}`, { headers: authHeaders });
             toast.success("Trade borrado");
             await load();
             onMutated?.();
         } catch (e) {
-            toast.error("No se pudo borrar");
+            toast.error(`No se pudo borrar: ${e.response?.data?.detail || e.message}`);
         }
     };
 
@@ -125,7 +128,7 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
             <div className="max-w-[1400px] mx-auto">
                 <div className="mb-8 flex items-end justify-between flex-wrap gap-4">
                     <div>
-                        <div className="kicker mb-2">SECTION 06 / JOURNAL</div>
+                        <div className="kicker mb-2">SECTION 08 / JOURNAL</div>
                         <h2 className="font-display text-3xl md:text-4xl font-black tracking-tight">
                             Trade journal
                             <span className="text-[var(--green)]">.</span>

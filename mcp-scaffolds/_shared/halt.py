@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-HALT_FILE = os.path.expanduser(os.environ.get("HALT_FILE", "~/mcp/.HALT"))
+HALT_FILE = os.path.expanduser(os.environ.get("HALT_FILE", "/opt/trading-bot/state/.HALT"))
 
 
 def is_halted() -> bool:
