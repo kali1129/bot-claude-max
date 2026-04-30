@@ -15,8 +15,8 @@ MAX_DAILY_LOSS_PCT:     float = 999.0  # 2026-04-28: stress test mode by
                                         # effectively unreachable. Bot can
                                         # blow the demo balance — that's the
                                         # point of the stress test.
-MAX_OPEN_POSITIONS:     int   = 3    # 2026-04-30: multi-strategy 24h test. Was 2.
-MIN_RR:                 float = 1.5    # 2026-04-30: lowered for 24h test. Was 2.0.
+MAX_OPEN_POSITIONS:     int   = 7    # 2026-04-30: multi-strategy 24h test. Was 2.
+MIN_RR:                 float = 0.3    # 2026-04-30: lowered for 24h test. Was 2.0.
 MAX_CONSECUTIVE_LOSSES: int   = 999    # 2026-04-28: stress test. Was 3.
                                         # Anti-tilt removed for "test how
                                         # far the strategy goes" run.

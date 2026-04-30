@@ -526,10 +526,10 @@ def _close_paper_trade(trade: dict, exit_price: float, reason: str) -> dict:
     _post_journal(journal_payload)
     side_es = "compra" if side == "buy" else "venta"
     icon = "🟢" if pnl_usd > 0 else ("🔴" if pnl_usd < 0 else "⚪")
-    _tg_wl = "Ganó" if pnl_usd > 0 else "Perdió"
     _tg_send(
-        f"{icon} *{_tg_wl}:* {trade['symbol']}\n"
-        f"P&L: *${pnl_usd:+.2f}*"
+        f"{icon} *Trade cerrado* ({reason})\n"
+        f"`{trade['symbol']}` {side_es} @ `{exit_price}`\n"
+        f"P&L *${pnl_usd:+.2f}* · {r_multiple:+.2f}R"
     )
     return closed
 
@@ -563,7 +563,11 @@ def _monitor_paper_trades() -> dict:
                     closed = _close_paper_trade(t, float(t["entry"]),
                                                  "MONITOR_STUCK")
                     just_closed.append(closed)
-                    # SILENCED: paper force-close telegram
+                    _tg_send(
+                        f"⚠️ *PAPER force-close* (monitor stuck)\n"
+                        f"`{t['symbol']}` ticket=`{t['ticket']}` — "
+                        f"sin tick por {fails} ciclos. Cerrado en entry."
+                    )
                     continue
                 t["monitor_failures"] = fails
                 still_open.append(t)
@@ -752,10 +756,16 @@ def _manage_open_positions(iteration: int) -> None:
                     _cd = f"{_ch}h {_cm}m" if _ch > 0 else f"{_cm}m"
                 else:
                     _cd = "?"
-                _tg_wl2 = "Ganó" if pnl > 0 else "Perdió"
                 _tg_send(
-                    f"{_ci} *{_tg_wl2}:* {out_deal.symbol}\n"
-                    f"P&L: *${pnl:+.2f}* · Duración: {_cd}"
+                    f"{_ci} *Trade cerrado* ({reason})\n"
+                    f"\U0001f4cc `{out_deal.symbol}` {_cs} · ticket `{ticket}`\n"
+                    f"Entry: `{entry:.5f}` → Exit: `{exit_price:.5f}`\n"
+                    f"P&L: *${pnl:+.2f}* · *{r_mult:+.2f}R*\n"
+                    f"⏱ Duracion: `{_cd}`\n"
+                    f"\U0001f4c8 MFE: `{_tg_mfe:+.2f}R` · \U0001f4c9 MAE: `{_tg_mae:+.2f}R`\n"
+                    f"\U0001f512 BE: {'SI' if snap.get('be_moved') else 'NO'} · "
+                    f"Trails: `{snap.get('trail_count', 0)}`\n"
+                    f"SL orig: `{orig_sl}` · TP orig: `{orig_tp}`"
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("research close write failed for %s: %s", ticket, exc)
@@ -797,25 +807,12 @@ def _manage_open_positions(iteration: int) -> None:
                 continue
 
             # Use the active strategy's SL multiplier for correct R calculation
-            _sl_mult = 1.5  # common SL multiplier across strategies
+            _sl_mult = strat_engine.get_active_strategy().sl_atr_mult
             r = _r_progress(side, entry, _sl_mult * atr, current_price)
             sl_at_or_past_entry = (
                 (side == "buy" and current_sl >= entry > 0) or
                 (side == "sell" and 0 < current_sl <= entry)
             )
-
-            # MAX HOLD TIME: close after 3 hours if not in profit
-            try:
-                _open_time = getattr(p, 'time', None)
-                if _open_time:
-                    _hold_secs = (datetime.now(timezone.utc) - datetime.fromtimestamp(_open_time, tz=timezone.utc)).total_seconds()
-                    if _hold_secs > 10800:  # 3 hours
-                        if r < 0.5:  # not significantly in profit
-                            log.info('MAX_HOLD closing %s ticket=%d after %.0fmin (R=%.2f)', sym, p.ticket, _hold_secs/60, r)
-                            trading.close_position(int(p.ticket))
-                            continue
-            except Exception:
-                pass
 
             if r < 1.0:
                 # Not far enough into profit yet — leave alone
@@ -852,7 +849,12 @@ def _manage_open_positions(iteration: int) -> None:
                         rr_progress=r, current_price=current_price,
                     )
                     side_es = "compra" if side == "buy" else "venta"
-                    # SILENCED: SL breakeven telegram
+                    _tg_send(
+                        f"🔒 *SL movido a breakeven*\n"
+                        f"`{sym}` {side_es} ticket=`{p.ticket}`\n"
+                        f"SL: `{current_sl}` → `{new_sl}` (entry)\n"
+                        f"R actual: *+{r:.2f}R*"
+                    )
                 continue
 
             # === Phase 2: ATR trailing ===
@@ -889,7 +891,12 @@ def _manage_open_positions(iteration: int) -> None:
                     rr_progress=r, current_price=current_price,
                 )
                 side_es = "compra" if side == "buy" else "venta"
-                # SILENCED: SL trailing telegram
+                _tg_send(
+                    f"📈 *SL trailing*\n"
+                    f"`{sym}` {side_es} ticket=`{p.ticket}`\n"
+                    f"SL: `{current_sl}` → `{proposed}`\n"
+                    f"R actual: *+{r:.2f}R*"
+                )
         except Exception as exc:  # noqa: BLE001
             log.warning("manage failed for ticket %s: %s",
                         getattr(p, "ticket", "?"), exc)
@@ -910,25 +917,25 @@ def _atr_distance(bars, default=0.0010) -> float:
 
 
 def _propose_setup(bars_m15, bars_h4, bars_d1, tick) -> list:
-    """Multi-strategy: all eligible strategies propose signals."""
+    """Use the active strategy engine to generate proposals."""
     if not tick:
         return []
+    strategy = strat_engine.get_active_strategy()
+    # We need the symbol name — it's passed via a closure variable
+    # in _scan(). Since we can't change the signature easily, we'll
+    # store it in a module-level variable set by _scan().
     sym = getattr(_propose_setup, '_current_symbol', 'UNKNOWN')
-    eligible = strat_engine.get_eligible_strategies()
+    signals = strategy.propose(sym, tick, bars_m15, bars_h4, bars_d1)
+    # Convert Signal objects to dicts for compatibility
     proposals = []
-    for strategy in eligible:
-        try:
-            signals = strategy.propose(sym, tick, bars_m15, bars_h4, bars_d1)
-            for s in signals:
-                proposals.append({
-                    "side": s.side, "entry": s.entry, "sl": s.sl,
-                    "tp": s.tp, "atr": s.atr, "score": s.score,
-                    "rec": s.rec, "breakdown": s.breakdown,
-                    "strategy_id": s.strategy_id,
-                    "extra": s.extra,
-                })
-        except Exception as exc:
-            log.warning("strategy %s failed for %s: %s", strategy.id, sym, exc)
+    for s in signals:
+        proposals.append({
+            "side": s.side, "entry": s.entry, "sl": s.sl,
+            "tp": s.tp, "atr": s.atr, "score": s.score,
+            "rec": s.rec, "breakdown": s.breakdown,
+            "strategy_id": s.strategy_id,
+            "extra": s.extra,
+        })
     return proposals
 
 def _save_last_scan(best, candidates) -> None:
@@ -1002,7 +1009,7 @@ def main():
                     help="seconds between scans (default 300)")
     ap.add_argument("--risk-pct", type=float, default=1.0,
                     help="risk percent per trade (default 1.0)")
-    ap.add_argument("--min-score", type=int, default=40,
+    ap.add_argument("--min-score", type=int, default=75,
                     help="min composite score to enter (default 70)")
     ap.add_argument("--symbols", default=None,
                     help="comma-separated watchlist override")
@@ -1019,8 +1026,12 @@ def main():
     log.info("auto-trader starting — interval=%ss risk=%.1f%% min_score=%d watchlist=%s",
              args.interval, args.risk_pct, args.min_score, watchlist)
     _tg_send(
-        f"🤖 *Bot iniciado*\n"
-        f"Cada {args.interval}s · Riesgo {args.risk_pct}% · Score mín {args.min_score}"
+        f"\U0001f916 *Auto-trader iniciado*\n"
+        f"⏱ Intervalo: `{args.interval}s`\n"
+        f"\U0001f4b0 Riesgo: `{args.risk_pct}%` por trade\n"
+        f"\U0001f4ca Min score: `{args.min_score}`\n"
+        f"\U0001f4cb Watchlist: `{','.join(watchlist)}`\n"
+        f"\U0001f550 UTC: `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}`"
     )
     _audit({"event": "start", "interval": args.interval, "risk_pct": args.risk_pct,
             "min_score": args.min_score, "watchlist": watchlist})
@@ -1051,21 +1062,7 @@ def main():
             _manage_open_positions(iteration)
 
             # Periodic summary every 12 iterations (~1 hour at 5min interval)
-            # Count closed trades today for summary trigger
-            _closed_trade_count = 0
-            try:
-                _ctd = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                with open(RESEARCH_LOG, "r") as _ctf:
-                    for _ctl in _ctf:
-                        try:
-                            _ctr = json.loads(_ctl)
-                            if _ctr.get("event") == "close" and _ctr.get("ts", "").startswith(_ctd):
-                                _closed_trade_count += 1
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-            except FileNotFoundError:
-                pass
-            if _closed_trade_count > 0 and _closed_trade_count % 10 == 0 and _closed_trade_count != getattr(_tg_send, "_last_summary_at", -1):
+            if iteration % 12 == 0:
                 try:
                     _sa = trading.get_account_info()
                     _sp = trading.get_open_positions().get("positions", [])
@@ -1093,14 +1090,16 @@ def main():
                         pass
                     _so = f" ({', '.join(_ss)})" if _ss else ""
                     _tg_send(
-                        f"📊 *Resumen* (iter {iteration})\n"
-                        f"Balance: ${_sb:.2f} · P&L hoy: ${_st:+.2f}\n"
-                        f"Hoy: {_sw}W / {_sl2}L · Posiciones: {len(_sp)}"
+                        f"\U0001f4ca *Resumen horario* (iter {iteration})\n"
+                        f"\U0001f4b0 Balance: `${_sb:.2f}` · Equity: `${_se:.2f}`\n"
+                        f"\U0001f4c8 Profit flotante: `${_sf:+.2f}`\n"
+                        f"\U0001f193 Margen libre: `${_sm:.2f}`\n"
+                        f"\U0001f4c2 Posiciones: `{len(_sp)}`{_so}\n"
+                        f"\U0001f4c5 Hoy: `{_sw}W / {_sl2}L` · P&L: `${_st:+.2f}`\n"
+                        f"\U0001f550 UTC: `{datetime.now(timezone.utc).strftime('%H:%M')}`"
                     )
                 except Exception as _sx:
                     log.debug("periodic summary failed: %s", _sx)
-                # Mark that we sent summary at this count
-                _tg_send._last_summary_at = _closed_trade_count
 
             # 1.5 monitor open paper trades (always, even if we won't open new)
             monitor = _monitor_paper_trades()
@@ -1166,7 +1165,12 @@ def main():
                             f"score={_nc.get('score','')} {_nc.get('rec','')}"
                         )
                     _ns = NL.join(_nl) if _nl else "  ninguno"
-                    # SILENCED: sin señal telegram
+                    _tg_send(
+                        f"\U0001f50d *Sin señal* (iter {iteration})\n"
+                        f"Min score: `{args.min_score}` · Best: `{best['score'] if best else 'n/a'}`\n"
+                        f"Scanned: `{len(scannable)}` symbols\n"
+                        f"Top 5:{NL}{_ns}"
+                    )
                 _sleep(args.interval)
                 continue
 
@@ -1189,27 +1193,26 @@ def main():
             # via strategy.hard_filter() -> base.is_in_trading_hours()
             _gf_hour = datetime.now(timezone.utc).hour
 
-            # Strategy-specific hard filter (use the strategy that proposed the signal)
-            # DISABLED: _hf_strat_id = best.get("strategy_id", "")
-            # DISABLED: _active_strat = strat_engine.REGISTRY.get(_hf_strat_id, strat_engine.get_active_strategy())
-            # DISABLED: if hasattr(best, 'get') and best.get("extra"):
-                # DISABLED: # Build a mock signal for the hard filter
-                # DISABLED: from strategies.base import Signal as _Sig
-                # DISABLED: _mock = _Sig(
-                    # DISABLED: symbol=best["symbol"], side=best["side"],
-                    # DISABLED: entry=best["entry"], sl=best["sl"], tp=best["tp"],
-                    # DISABLED: atr=best.get("atr", 0), score=best["score"],
-                    # DISABLED: rec=best["rec"], breakdown=best.get("breakdown", {}),
-                    # DISABLED: strategy_id=best.get("strategy_id", ""),
-                    # DISABLED: extra=best.get("extra", {}),
-                # DISABLED: )
-                # DISABLED: _hf_pass, _hf_reason = _active_strat.hard_filter(_mock, _gf_tick)
-                # DISABLED: if not _hf_pass:
-                    # DISABLED: log.info("STRATEGY FILTER: %s %s — skip", best["symbol"], _hf_reason)
-                    # DISABLED: _audit({"iter": iteration, "skip": "STRATEGY_FILTER",
-                            # DISABLED: "symbol": best["symbol"], "reason": _hf_reason})
-                    # DISABLED: _sleep(args.interval)
-                    # DISABLED: continue
+            # Strategy-specific hard filter
+            _active_strat = strat_engine.get_active_strategy()
+            if hasattr(best, 'get') and best.get("extra"):
+                # Build a mock signal for the hard filter
+                from strategies.base import Signal as _Sig
+                _mock = _Sig(
+                    symbol=best["symbol"], side=best["side"],
+                    entry=best["entry"], sl=best["sl"], tp=best["tp"],
+                    atr=best.get("atr", 0), score=best["score"],
+                    rec=best["rec"], breakdown=best.get("breakdown", {}),
+                    strategy_id=best.get("strategy_id", ""),
+                    extra=best.get("extra", {}),
+                )
+                _hf_pass, _hf_reason = _active_strat.hard_filter(_mock, _gf_tick)
+                if not _hf_pass:
+                    log.info("STRATEGY FILTER: %s %s — skip", best["symbol"], _hf_reason)
+                    _audit({"iter": iteration, "skip": "STRATEGY_FILTER",
+                            "symbol": best["symbol"], "reason": _hf_reason})
+                    _sleep(args.interval)
+                    continue
 
             # 3. size
             sym_info = _symbol_size_inputs(best["symbol"])
@@ -1298,9 +1301,10 @@ def main():
                          best["entry"], best["sl"], best["tp"])
                 side_es = "COMPRA" if best["side"] == "buy" else "VENTA"
                 _tg_send(
-                    f"🟢 *Entró:* {best['symbol']} {side_es}\n"
-                    f"Riesgo: ${size.get('risk_dollars', 0):.2f} · "
-                    f"{best.get('strategy_id', '?').replace('_', ' ').title()}"
+                    f"🟢 *Trade abierto* (paper)\n"
+                    f"`{best['symbol']}` {side_es} · {size['lots']} lots\n"
+                    f"Entry `{best['entry']}` · SL `{best['sl']}` · TP `{best['tp']}`\n"
+                    f"Score `{best['score']}` · riesgo *${size.get('risk_dollars', 0):.2f}*"
                 )
 
         except Exception as exc:  # noqa: BLE001

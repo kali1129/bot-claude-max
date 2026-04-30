@@ -73,7 +73,7 @@ class ScoreV3(Strategy):
 
     min_score = 75
     sl_atr_mult = 1.5
-    tp_atr_mult = 3.0
+    tp_atr_mult = 2.0
     # Market & schedule: general purpose, standard active forex hours
     preferred_symbols = None  # all symbols
     blocked_symbols = frozenset()
@@ -145,12 +145,20 @@ class ScoreV3(Strategy):
             score = 0
             bd = {}
 
-            # 1. Trend M15 (15): EMA50 > EMA200 AND price on right side
+            # 1. Trend M15 (15): gradient — full points if aligned + strong separation
             last_c = float(close[-1])
             if side == "buy":
-                bd["trend_m15"] = 15 if (last_c > e50 and e50 > e200) else 0
+                if last_c > e50 and e50 > e200:
+                    ema_gap = (e50 - e200) / atr_val if atr_val > 0 else 0
+                    bd["trend_m15"] = 15 if ema_gap > 1.0 else (10 if ema_gap > 0.3 else 5)
+                else:
+                    bd["trend_m15"] = 0
             else:
-                bd["trend_m15"] = 15 if (last_c < e50 and e50 < e200) else 0
+                if last_c < e50 and e50 < e200:
+                    ema_gap = (e200 - e50) / atr_val if atr_val > 0 else 0
+                    bd["trend_m15"] = 15 if ema_gap > 1.0 else (10 if ema_gap > 0.3 else 5)
+                else:
+                    bd["trend_m15"] = 0
             score += bd["trend_m15"]
 
             # 2. Trend H4 (15)
@@ -161,11 +169,21 @@ class ScoreV3(Strategy):
             bd["trend_d1"] = 15 if (d1_bull if side == "buy" else d1_bear) else 0
             score += bd["trend_d1"]
 
-            # 4. RSI momentum (10)
+            # 4. RSI momentum (10) — gradient
             if side == "buy":
-                bd["rsi"] = 10 if 50 < rsi_val < 70 else 0
+                if 55 <= rsi_val <= 65:
+                    bd["rsi"] = 10
+                elif 50 < rsi_val < 70:
+                    bd["rsi"] = 5
+                else:
+                    bd["rsi"] = 0
             else:
-                bd["rsi"] = 10 if 30 < rsi_val < 50 else 0
+                if 35 <= rsi_val <= 45:
+                    bd["rsi"] = 10
+                elif 30 < rsi_val < 50:
+                    bd["rsi"] = 5
+                else:
+                    bd["rsi"] = 0
             score += bd["rsi"]
 
             # 5. Volume (5)

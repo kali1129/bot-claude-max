@@ -48,15 +48,8 @@ def _is_in_hours(strategy_id: str, utc_hour: int) -> bool:
 
 
 def get_eligible_strategies(utc_hour: int = None) -> List[Strategy]:
-    if utc_hour is None:
-        utc_hour = datetime.now(timezone.utc).hour
-    eligible = []
-    for sid, strategy in REGISTRY.items():
-        if _is_in_hours(sid, utc_hour):
-            eligible.append(strategy)
-    if not eligible:
-        eligible.append(REGISTRY["mean_reverter"])
-    return eligible
+    """TEST MODE: return ALL strategies regardless of hour."""
+    return list(REGISTRY.values())
 
 
 def get_active_strategy() -> Strategy:

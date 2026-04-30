@@ -71,7 +71,7 @@ class TrendRider(Strategy):
 
     min_score = 70
     sl_atr_mult = 1.5
-    tp_atr_mult = 3.0
+    tp_atr_mult = 2.0
     # Market & schedule: trends develop during London + NY overlap
     preferred_symbols = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "XAUUSD", "BTCUSD", "ETHUSD"}
     blocked_symbols = frozenset()
