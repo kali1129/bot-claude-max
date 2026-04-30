@@ -1038,7 +1038,21 @@ def main():
             _manage_open_positions(iteration)
 
             # Periodic summary every 12 iterations (~1 hour at 5min interval)
-            if iteration % 12 == 0:
+            # Count closed trades today for summary trigger
+            _closed_trade_count = 0
+            try:
+                _ctd = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                with open(RESEARCH_LOG, "r") as _ctf:
+                    for _ctl in _ctf:
+                        try:
+                            _ctr = json.loads(_ctl)
+                            if _ctr.get("event") == "close" and _ctr.get("ts", "").startswith(_ctd):
+                                _closed_trade_count += 1
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+            except FileNotFoundError:
+                pass
+            if _closed_trade_count > 0 and _closed_trade_count % 10 == 0 and _closed_trade_count != getattr(_tg_send, "_last_summary_at", -1):
                 try:
                     _sa = trading.get_account_info()
                     _sp = trading.get_open_positions().get("positions", [])
@@ -1072,6 +1086,8 @@ def main():
                     )
                 except Exception as _sx:
                     log.debug("periodic summary failed: %s", _sx)
+                # Mark that we sent summary at this count
+                _tg_send._last_summary_at = _closed_trade_count
 
             # 1.5 monitor open paper trades (always, even if we won't open new)
             monitor = _monitor_paper_trades()
