@@ -804,19 +804,6 @@ def _manage_open_positions(iteration: int) -> None:
                 (side == "sell" and 0 < current_sl <= entry)
             )
 
-            # MAX HOLD TIME: close after 3 hours if not in profit
-            try:
-                _open_time = getattr(p, 'time', None)
-                if _open_time:
-                    _hold_secs = (datetime.now(timezone.utc) - datetime.fromtimestamp(_open_time, tz=timezone.utc)).total_seconds()
-                    if _hold_secs > 10800:  # 3 hours
-                        if r < 0.5:  # not significantly in profit
-                            log.info('MAX_HOLD closing %s ticket=%d after %.0fmin (R=%.2f)', sym, p.ticket, _hold_secs/60, r)
-                            trading.close_position(int(p.ticket))
-                            continue
-            except Exception:
-                pass
-
             if r < 1.0:
                 # Not far enough into profit yet — leave alone
                 continue
