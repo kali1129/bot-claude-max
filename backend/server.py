@@ -34,6 +34,8 @@ import auth as auth_mod  # noqa: E402  (relativa al WORKINGDIR del backend)
 import broker_manager  # noqa: E402
 import bot_supervisor  # noqa: E402
 import crypto_box  # noqa: E402
+import process_supervisor  # noqa: E402
+import wine_prefix_manager  # noqa: E402
 
 from plan_content import (
     CAPITAL,
@@ -91,15 +93,35 @@ async def lifespan(_app: FastAPI):
         await broker_manager.ensure_indexes(state.db)
         await bot_supervisor.ensure_indexes(state.db)
         log.info("connected to mongo db=%s", db_name)
+    # FASE 3: re-attach a procesos huerfanos del backend anterior. Los
+    # procesos auto_trader.py per-user que sobrevivieron al reinicio del
+    # backend siguen corriendo (start_new_session). Limpiamos PID file
+    # de los muertos y dejamos vivos los activos.
+    try:
+        reattach = process_supervisor.reattach_on_startup()
+        log.info("process supervisor reattach: alive=%d dead=%d",
+                 len(reattach.get("alive", [])),
+                 len(reattach.get("dead", [])))
+        # Para los que murieron, marcamos sus runs como crashed
+        if state.db is not None and reattach.get("dead"):
+            for d in reattach["dead"]:
+                await bot_supervisor.reconcile_processes(state.db)
+                break  # reconcile recorre todo, una llamada basta
+    except Exception as exc:
+        log.warning("reattach failed: %s", exc)
+
     # Background trial checker — cada 60s revisa si algún user-bot expiró
-    # las 24h de trial y lo detiene automáticamente.
+    # las 24h de trial y lo detiene automáticamente. También reconcilia
+    # procesos muertos (si crashearon, marca el run como crashed).
     _start_trial_checker()
+    _start_process_reconciler()
     # Background equity sampler — persiste samples cada N segundos para que
     # el chart del dashboard sobreviva refresh / cierre de tab. Sin esto, el
     # chart arrancaba desde cero en cada visita.
     _start_equity_sampler()
     yield
     _stop_trial_checker()
+    _stop_process_reconciler()
     _stop_equity_sampler()
     if state.mongo_client is not None:
         state.mongo_client.close()
@@ -142,6 +164,42 @@ def _stop_trial_checker():
         except Exception:
             pass
         _trial_task = None
+
+
+# Reconciler: cada 90s revisa procesos vivos vs runs activos en Mongo.
+# Si un proceso murió pero el run sigue activo, marca crashed.
+_reconciler_task = None
+
+
+def _start_process_reconciler():
+    global _reconciler_task
+    if _reconciler_task is not None and not _reconciler_task.done():
+        return
+
+    async def _loop():
+        while True:
+            try:
+                if state.db is not None:
+                    await bot_supervisor.reconcile_processes(state.db)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("reconciler iteration failed: %s", exc)
+            await asyncio.sleep(90)
+
+    try:
+        _reconciler_task = asyncio.create_task(_loop())
+        log.info("process reconciler started (interval=90s)")
+    except Exception as exc:
+        log.warning("failed to start process reconciler: %s", exc)
+
+
+def _stop_process_reconciler():
+    global _reconciler_task
+    if _reconciler_task is not None:
+        try:
+            _reconciler_task.cancel()
+        except Exception:
+            pass
+        _reconciler_task = None
 
 
 # ─────────────────────────── equity sampler thread ───────────────────────────
@@ -492,20 +550,42 @@ async def admin_delete_user(
     user_id: str,
     db=Depends(get_db),
 ):
-    """Elimina un usuario. NO se puede eliminar al admin actual (o se
-    queda sin acceso)."""
+    """Elimina un usuario completamente: cuenta + broker creds + bot run +
+    Wine prefix + state + logs. NO se puede eliminar al último admin."""
     if db is None:
         raise HTTPException(503, "DB no disponible")
     user = await db.users.find_one({"_id": user_id})
     if not user:
         raise HTTPException(404, "usuario no existe")
     if user.get("role") == "admin":
-        # Conteo de admins — no permitir borrar el último
         admin_count = await db.users.count_documents({"role": "admin"})
         if admin_count <= 1:
             raise HTTPException(409,
                 "no podés eliminar el último admin del sistema")
+
+    # 1. Si bot está corriendo, killearlo primero
+    try:
+        await bot_supervisor.stop_bot(db, user_id, reason="user_deleted")
+    except Exception as exc:
+        log.warning("stop_bot during delete failed for %s: %s", user_id, exc)
+
+    # 2. Borrar credenciales broker (cifradas)
+    try:
+        await broker_manager.delete_creds(db, user_id)
+    except Exception as exc:
+        log.warning("delete_creds failed for %s: %s", user_id, exc)
+
+    # 3. Borrar Wine prefix + state + logs (filesystem cleanup)
+    try:
+        cleanup = wine_prefix_manager.delete_user_prefix(user_id, keep_logs=False)
+        log.info("filesystem cleanup for %s: %s", user_id, cleanup)
+    except Exception as exc:
+        log.warning("prefix cleanup failed for %s: %s", user_id, exc)
+
+    # 4. Borrar el usuario y sus runs
+    await db.bot_runs.delete_many({"user_id": user_id})
     await db.users.delete_one({"_id": user_id})
+
     return {"ok": True, "deleted_id": user_id}
 
 
@@ -649,6 +729,44 @@ async def my_bot_slots(
     """Info global de slots para mostrar en el banner: cuántos hay activos
     y cuántos quedan disponibles. Cualquier usuario lo puede consultar."""
     return await bot_supervisor.slot_info(db)
+
+
+@api_router.get("/users/me/bot/logs")
+async def my_bot_logs(
+    lines: int = 100,
+    which: str = "stdout",
+    current=Depends(auth_mod.require_user),
+):
+    """Tail de los logs del bot del usuario. ``which`` ∈ {stdout, stderr}."""
+    if current.legacy_admin:
+        return {"ok": False, "reason": "legacy", "logs": ""}
+    lines = max(10, min(1000, int(lines)))
+    if which not in ("stdout", "stderr"):
+        which = "stdout"
+    text = process_supervisor.tail_log(current.id, lines=lines, which=which)
+    return {
+        "ok": True,
+        "lines": lines,
+        "which": which,
+        "is_running": process_supervisor.is_running(current.id),
+        "pid": process_supervisor.get_pid(current.id),
+        "logs": text,
+    }
+
+
+# ─────────────────────────── /api/admin/wine-template ───────────────────
+
+@api_router.get("/admin/wine-template")
+async def admin_wine_template_status(
+    _admin=Depends(auth_mod.require_admin),
+):
+    """Estado del Wine prefix template: existe, tamaño, has Python/MT5."""
+    return {
+        "ok": True,
+        "template": wine_prefix_manager.template_health(),
+        "stats": wine_prefix_manager.stats(),
+        "running_processes": process_supervisor.list_running(),
+    }
 
 
 # ─────────────────────────── /api/admin/* enriquecidos ───────────────

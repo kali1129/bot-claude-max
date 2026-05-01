@@ -37,9 +37,13 @@ _TTL_SECONDS = 60.0
 _PENDING = "__PENDING__"
 
 # Disk path. Honours $LOG_DIR (same env var the bot uses for ~/mcp/logs);
-# state/ lives next to logs/ by default so users only have to back up one root.
-_STATE_DIR = Path(os.path.expanduser(os.environ.get("LOG_DIR", "~/mcp/logs"))) \
-    .parent / "state"
+# FASE 3: STATE_DIR override per-user. Si no, sibling de LOG_DIR.
+_STATE_DIR_ENV = os.environ.get("STATE_DIR", "").strip()
+if _STATE_DIR_ENV:
+    _STATE_DIR = Path(os.path.expanduser(_STATE_DIR_ENV))
+else:
+    _STATE_DIR = Path(os.path.expanduser(
+        os.environ.get("LOG_DIR", "~/mcp/logs"))).parent / "state"
 _STATE_FILE = _STATE_DIR / "idempotency.json"
 
 _lock = threading.Lock()

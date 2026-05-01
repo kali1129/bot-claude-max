@@ -23,9 +23,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+_STATE_DIR_ENV = os.environ.get("STATE_DIR", "").strip()
 _FILE = Path(os.path.expanduser(
-    os.environ.get("EXPECTANCY_FILE",
-                   "/opt/trading-bot/state/expectancy_tracker.json")
+    os.environ.get(
+        "EXPECTANCY_FILE",
+        f"{_STATE_DIR_ENV}/expectancy_tracker.json"
+        if _STATE_DIR_ENV
+        else "/opt/trading-bot/state/expectancy_tracker.json",
+    )
 ))
 
 # Tamaño de la ventana rolling por combo

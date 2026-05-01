@@ -25,9 +25,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# FASE 3: STATE_DIR override para multi-tenant. Si está definido, se usa
+# como base para el ledger. Sino se cae al hardcoded global del admin.
+_STATE_DIR_ENV = os.environ.get("STATE_DIR", "").strip()
 _LEDGER_FILE = Path(os.path.expanduser(
-    os.environ.get("CAPITAL_LEDGER_FILE",
-                   "/opt/trading-bot/state/capital_ledger.json")
+    os.environ.get(
+        "CAPITAL_LEDGER_FILE",
+        f"{_STATE_DIR_ENV}/capital_ledger.json"
+        if _STATE_DIR_ENV
+        else "/opt/trading-bot/state/capital_ledger.json",
+    )
 ))
 
 _DEFAULT_TARGET = float(os.environ.get("TARGET_CAPITAL_USD", "800"))

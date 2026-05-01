@@ -98,9 +98,15 @@ LAST_SCAN_FILE = HERE / "last_scan.json"     # most recent scan snapshot
 # The dashboard pulls this via /api/research/trades.
 RESEARCH_LOG = LOG_DIR / "trade_research.jsonl"
 # State file used while a position is open to track MAE/MFE (max adverse /
-# max favorable excursion in pips). Lives next to the lock file.
-RESEARCH_STATE_FILE = Path(os.path.expanduser(
-    os.environ.get("LOG_DIR", "~/mcp/logs"))).parent / "state" / "position_state.json"
+# max favorable excursion in pips). FASE 3: si STATE_DIR está definido,
+# se usa esa ruta directamente (multi-tenant per-user). Sino, sibling de
+# LOG_DIR (compat con bot global del admin).
+_STATE_DIR_OVERRIDE = (os.environ.get("STATE_DIR") or "").strip()
+if _STATE_DIR_OVERRIDE:
+    RESEARCH_STATE_FILE = Path(_STATE_DIR_OVERRIDE) / "position_state.json"
+else:
+    RESEARCH_STATE_FILE = Path(os.path.expanduser(
+        os.environ.get("LOG_DIR", "~/mcp/logs"))).parent / "state" / "position_state.json"
 
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://127.0.0.1:8000").rstrip("/")
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "").strip()

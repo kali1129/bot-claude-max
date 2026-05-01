@@ -40,6 +40,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import broker_manager
+import process_supervisor
+import wine_prefix_manager
 
 log = logging.getLogger("bot_supervisor")
 
@@ -196,9 +198,80 @@ async def start_bot(db, user_id: str) -> dict:
     log.info("bot started: user=%s run_id=%s admin=%s paid=%s "
              "trial_end=%s", user_id, run_id, is_admin, paid, trial_end)
 
-    # FASE 3: aquí iría el spawn del proceso real con Wine prefix.
-    # Por ahora solo el record queda creado; el bot global del admin sigue
-    # operando como antes con su propia config.
+    # FASE 3: spawn real del subprocess. El admin NO usa este path —
+    # su bot global ya corre como systemd service trading-auto-trader.
+    spawn_info = None
+    spawn_error = None
+    if not is_admin:
+        if not wine_prefix_manager.has_template():
+            spawn_error = (
+                "Wine template no configurado. El admin debe correr "
+                "scripts/setup-wine-template.sh --clone-from-admin"
+            )
+            log.warning("user=%s start FAILED: %s", user_id, spawn_error)
+            # Marcar el run como crashed para que no quede en estado raro
+            await db.bot_runs.update_one(
+                {"_id": res.inserted_id},
+                {"$set": {
+                    "stopped_at": _now_iso(),
+                    "exit_reason": "no_wine_template",
+                }},
+            )
+            return {
+                "ok": False,
+                "reason": "NO_TEMPLATE",
+                "detail": spawn_error,
+            }
+        # Descifrar password para pasarla por env al subprocess
+        password = await broker_manager.get_decrypted_password(db, user_id)
+        if not password:
+            await db.bot_runs.update_one(
+                {"_id": res.inserted_id},
+                {"$set": {
+                    "stopped_at": _now_iso(),
+                    "exit_reason": "decrypt_failed",
+                }},
+            )
+            return {
+                "ok": False,
+                "reason": "DECRYPT_FAILED",
+                "detail": (
+                    "no pudimos descifrar tu password — re-conectá tu broker"
+                ),
+            }
+        creds = await broker_manager.get_creds(db, user_id)
+        try:
+            spawn_info = await process_supervisor.start_bot_process(
+                user_id=user_id,
+                run_id=run_id,
+                mt5_login=creds["mt5_login"],
+                mt5_password=password,
+                mt5_server=creds["mt5_server"],
+                is_demo=bool(creds.get("is_demo", True)),
+            )
+            await db.bot_runs.update_one(
+                {"_id": res.inserted_id},
+                {"$set": {
+                    "pid": spawn_info.get("pid"),
+                    "prefix": spawn_info.get("prefix"),
+                    "logs_dir": spawn_info.get("logs_dir"),
+                }},
+            )
+        except Exception as exc:
+            log.error("spawn user-bot failed user=%s: %s", user_id, exc)
+            await db.bot_runs.update_one(
+                {"_id": res.inserted_id},
+                {"$set": {
+                    "stopped_at": _now_iso(),
+                    "exit_reason": "spawn_failed",
+                    "error": str(exc),
+                }},
+            )
+            return {
+                "ok": False,
+                "reason": "SPAWN_FAILED",
+                "detail": str(exc),
+            }
 
     return {
         "ok": True, "reason": StartResult.OK,
@@ -207,15 +280,17 @@ async def start_bot(db, user_id: str) -> dict:
         "trial_end_at": trial_end,
         "is_admin": is_admin,
         "is_paid": paid,
+        "pid": (spawn_info or {}).get("pid"),
         "note": (
-            "Bot activado en el registro. La integración con Wine para "
-            "operar tu cuenta MT5 está en FASE 3 — pronto."
+            "Bot global del admin. Sigue corriendo como systemd service."
+            if is_admin
+            else "Bot personal lanzado. Tu Wine prefix dedicado está activo."
         ),
     }
 
 
 async def stop_bot(db, user_id: str, *, reason: str = "user_stop") -> dict:
-    """Detiene el bot del user. Marca el run como stopped."""
+    """Detiene el bot del user. Marca el run como stopped + kill subprocess."""
     if db is None:
         return {"ok": False, "reason": "DB_UNAVAILABLE"}
 
@@ -223,6 +298,16 @@ async def stop_bot(db, user_id: str, *, reason: str = "user_stop") -> dict:
     if not running:
         return {"ok": False, "reason": "NOT_RUNNING",
                 "detail": "tu bot no está activo"}
+
+    # FASE 3: si el subprocess está corriendo, killearlo (SIGTERM → SIGKILL).
+    # Para admin no aplica — su bot es un systemd service.
+    is_admin = bool(running.get("is_admin"))
+    if not is_admin:
+        try:
+            kill_res = await process_supervisor.stop_bot_process(user_id)
+            log.info("subprocess stop result user=%s: %s", user_id, kill_res)
+        except Exception as exc:
+            log.warning("subprocess stop failed user=%s: %s", user_id, exc)
 
     await db.bot_runs.update_one(
         {"_id": running["_id"]},
@@ -238,6 +323,51 @@ async def stop_bot(db, user_id: str, *, reason: str = "user_stop") -> dict:
         "run_id": str(running["_id"]),
         "exit_reason": reason,
     }
+
+
+async def reconcile_processes(db) -> dict:
+    """Revisa que los runs activos en Mongo correspondan a procesos vivos.
+    Si un run está marcado como activo pero el proceso murió → marcar como
+    crashed. Llamado periódicamente desde el background loop.
+
+    Grace period: ignorar runs que empezaron hace < SPAWN_GRACE_SEC. La
+    clonación del Wine prefix + spawn puede tardar 30-60s en la primera
+    vez (cp -r de 2.7 GB). Sin grace, el reconciler mataría el run en
+    pleno clone.
+    """
+    if db is None:
+        return {"checked": 0, "marked_crashed": 0}
+    SPAWN_GRACE_SEC = 180   # 3 min — más que suficiente para clone + spawn
+    cutoff = _now() - timedelta(seconds=SPAWN_GRACE_SEC)
+    cursor = db.bot_runs.find({"stopped_at": None, "is_admin": False})
+    crashed = 0
+    checked = 0
+    async for run in cursor:
+        checked += 1
+        user_id = run.get("user_id")
+        if not user_id:
+            continue
+        # Grace period — runs jovenes no se evalúan aún
+        try:
+            started = datetime.fromisoformat(
+                str(run.get("started_at")).replace("Z", "+00:00")
+            )
+            if started > cutoff:
+                continue   # demasiado joven, dale tiempo al spawn
+        except (ValueError, TypeError):
+            pass
+        if not process_supervisor.is_running(user_id):
+            await db.bot_runs.update_one(
+                {"_id": run["_id"]},
+                {"$set": {
+                    "stopped_at": _now_iso(),
+                    "exit_reason": "process_crashed",
+                }},
+            )
+            crashed += 1
+            log.warning("user-bot reconcile: process dead, marking crashed "
+                        "user=%s run=%s", user_id, str(run["_id"]))
+    return {"checked": checked, "marked_crashed": crashed}
 
 
 async def status(db, user_id: str) -> dict:

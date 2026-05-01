@@ -125,8 +125,12 @@ def _paper_pnl_today() -> float:
 # bypass MAX_OPEN_POSITIONS=1. The lock serialises read-positions ↔
 # order_send so the second caller sees the first call's result via
 # idempotency cache or via positions_get returning the new ticket.
-_LOCK_FILE = Path(os.path.expanduser(
-    os.environ.get("LOG_DIR", "~/mcp/logs"))).parent / "state" / "place_order.lock"
+_STATE_DIR_ENV = (os.environ.get("STATE_DIR") or "").strip()
+if _STATE_DIR_ENV:
+    _LOCK_FILE = Path(os.path.expanduser(_STATE_DIR_ENV)) / "place_order.lock"
+else:
+    _LOCK_FILE = Path(os.path.expanduser(
+        os.environ.get("LOG_DIR", "~/mcp/logs"))).parent / "state" / "place_order.lock"
 
 
 class _PlaceOrderLock:

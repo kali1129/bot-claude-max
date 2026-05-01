@@ -27,9 +27,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+_STATE_DIR_ENV = os.environ.get("STATE_DIR", "").strip()
 _FILE = Path(os.path.expanduser(
-    os.environ.get("USER_SETTINGS_FILE",
-                   "/opt/trading-bot/state/user_settings.json")
+    os.environ.get(
+        "USER_SETTINGS_FILE",
+        f"{_STATE_DIR_ENV}/user_settings.json"
+        if _STATE_DIR_ENV
+        else "/opt/trading-bot/state/user_settings.json",
+    )
 ))
 
 _lock = threading.Lock()

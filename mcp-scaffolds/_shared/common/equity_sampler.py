@@ -26,9 +26,14 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable
 
+_STATE_DIR_ENV = os.environ.get("STATE_DIR", "").strip()
 _FILE = Path(os.path.expanduser(
-    os.environ.get("EQUITY_SAMPLES_FILE",
-                   "/opt/trading-bot/state/equity_samples.jsonl")
+    os.environ.get(
+        "EQUITY_SAMPLES_FILE",
+        f"{_STATE_DIR_ENV}/equity_samples.jsonl"
+        if _STATE_DIR_ENV
+        else "/opt/trading-bot/state/equity_samples.jsonl",
+    )
 ))
 
 # Cuántos segundos entre samples (default 30s = 2880 samples/día)
@@ -199,8 +204,12 @@ def stats() -> dict:
 # ──────────────────────────── background sampler ────────────────────────────
 
 _LOCK_FILE = Path(os.path.expanduser(
-    os.environ.get("EQUITY_SAMPLER_LOCK_FILE",
-                   "/opt/trading-bot/state/equity_sampler.lock")
+    os.environ.get(
+        "EQUITY_SAMPLER_LOCK_FILE",
+        f"{_STATE_DIR_ENV}/equity_sampler.lock"
+        if _STATE_DIR_ENV
+        else "/opt/trading-bot/state/equity_sampler.lock",
+    )
 ))
 
 

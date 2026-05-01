@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import {
     User, KeyRound, Server, Eye, EyeOff, Save, Trash2, PlayCircle,
     PauseCircle, Clock, Shield, AlertTriangle, ExternalLink, Loader2,
-    CheckCircle2, XCircle, RefreshCcw,
+    CheckCircle2, XCircle, RefreshCcw, Terminal, FileText,
 } from "lucide-react";
 
 import { apiGet, apiPost, apiDelete } from "@/lib/api";
@@ -68,6 +68,10 @@ export default function MyAccount() {
     const [testResult, setTestResult] = useState(null);
     const [confirmDelete, setConfirmDelete] = useState(false);
 
+    const [logs, setLogs] = useState("");
+    const [logsWhich, setLogsWhich] = useState("stdout");
+    const [showLogs, setShowLogs] = useState(false);
+
     const refresh = useCallback(async () => {
         try {
             const [b, bt, s] = await Promise.allSettled([
@@ -87,6 +91,23 @@ export default function MyAccount() {
             setLoading(false);
         }
     }, []);
+
+    const fetchLogs = useCallback(async () => {
+        try {
+            const r = await apiGet(`/users/me/bot/logs?lines=200&which=${logsWhich}`);
+            setLogs(r.data?.logs || "(sin logs todavía)");
+        } catch (e) {
+            setLogs("[error: " + (e.response?.data?.detail || e.message) + "]");
+        }
+    }, [logsWhich]);
+
+    useEffect(() => {
+        if (showLogs) {
+            fetchLogs();
+            const id = setInterval(fetchLogs, 5000);
+            return () => clearInterval(id);
+        }
+    }, [showLogs, fetchLogs]);
 
     useEffect(() => {
         refresh();
@@ -515,25 +536,95 @@ export default function MyAccount() {
                     )}
                 </div>
 
-                {/* Roadmap FASE 3 */}
+                {/* Logs viewer — solo si bot está running y broker conectado */}
+                {(broker || bot?.running) ? (
+                    <div className="panel p-4" data-testid="logs-card">
+                        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                            <div className="flex items-center gap-2">
+                                <Terminal size={14} className="text-[var(--green)]" />
+                                <span className="kicker">LOGS DE TU BOT</span>
+                                {bot?.running ? (
+                                    <span className="kicker text-[var(--green-bright)]">
+                                        ● PROCESO {bot?.run_id ? `RUN ${String(bot.run_id).slice(-6)}` : ""}
+                                    </span>
+                                ) : null}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <select
+                                    value={logsWhich}
+                                    onChange={(e) => {
+                                        setLogsWhich(e.target.value);
+                                        setLogs("");
+                                    }}
+                                    className="input-sharp text-[10px] py-1 px-2"
+                                >
+                                    <option value="stdout">stdout</option>
+                                    <option value="stderr">stderr</option>
+                                </select>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowLogs((s) => !s)}
+                                    className="btn-sharp text-[10px] flex items-center gap-1"
+                                >
+                                    <FileText size={11} />
+                                    {showLogs ? "Ocultar" : "Ver logs"}
+                                </button>
+                                {showLogs ? (
+                                    <button
+                                        type="button"
+                                        onClick={fetchLogs}
+                                        className="btn-sharp text-[10px]"
+                                        title="Refrescar"
+                                    >
+                                        <RefreshCcw size={11} />
+                                    </button>
+                                ) : null}
+                            </div>
+                        </div>
+                        {showLogs ? (
+                            <pre
+                                className="text-[10px] font-mono p-3 overflow-auto"
+                                style={{
+                                    background: "#000",
+                                    color: "var(--text-dim)",
+                                    maxHeight: 400,
+                                    border: "1px solid var(--border)",
+                                    whiteSpace: "pre-wrap",
+                                    wordBreak: "break-all",
+                                }}
+                                data-testid="logs-content"
+                            >
+                                {logs || "(cargando...)"}
+                            </pre>
+                        ) : (
+                            <div className="text-[11px] text-[var(--text-faint)]">
+                                Click "Ver logs" para abrir el visor de output del bot
+                                (refresca cada 5s automáticamente).
+                            </div>
+                        )}
+                    </div>
+                ) : null}
+
+                {/* Roadmap FASE 3 — ahora ya está implementada */}
                 <div
-                    className="panel p-4 border-l-2 text-xs"
+                    className="panel p-4 mt-4 border-l-2 text-xs"
                     style={{
-                        borderLeftColor: "var(--blue)",
-                        background: "rgba(59,130,246,0.04)",
+                        borderLeftColor: "var(--green)",
+                        background: "rgba(16,185,129,0.04)",
                     }}
                 >
                     <div className="flex items-start gap-2">
-                        <AlertTriangle size={14} className="text-[var(--blue)] mt-0.5" />
+                        <CheckCircle2 size={14} className="text-[var(--green)] mt-0.5" />
                         <div>
-                            <div className="font-bold text-[var(--blue)] kicker mb-1">
-                                FASE 3 PENDIENTE
+                            <div className="font-bold text-[var(--green-bright)] kicker mb-1">
+                                FASE 3 ACTIVA — TU BOT OPERA EN TU CUENTA
                             </div>
                             <p className="text-[var(--text-dim)] leading-relaxed">
-                                Hoy tu bot queda <strong>marcado como activo</strong> en el sistema y consume slot,
-                                pero la conexión real con tu MT5 (que opere por vos) está en la
-                                última fase de la integración. Cuando esté lista, el bot va a empezar a
-                                tomar trades en tu cuenta automáticamente.
+                                Cuando arrancás el bot, se levanta un proceso dedicado con
+                                Wine + MT5 + Python en tu propio prefix isolado. Operará
+                                con tus credenciales hasta que se acabe el trial (24h) o
+                                vos lo detengas. Los trades van a TU cuenta XM, no a la
+                                del admin.
                             </p>
                         </div>
                     </div>
