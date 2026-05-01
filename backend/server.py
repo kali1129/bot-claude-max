@@ -215,20 +215,30 @@ except ImportError as exc:
 
 @api_router.get("/capital")
 async def get_capital():
-    """Snapshot del capital_ledger: target vs starting vs current vs peak.
+    """Snapshot del capital ledger + meta del usuario.
 
-    Reemplaza el patrón anterior de "capital hardcoded $800". Ahora se
-    distinguen explícitamente:
-      - **target_capital**: la meta del plan ($800). Nunca cambia.
-      - **starting_balance**: balance al inicio de esta sesión de trading.
-      - **current_balance**: balance live de MT5.
-      - **peak_equity**: equity máximo alcanzado (para DD all-time).
+    El ``target_capital_usd`` se lee primero de ``user_settings.goal_usd``
+    (la meta que el usuario configuró). Si no hay setting, fallback al
+    valor del ledger (default 800 del env TARGET_CAPITAL_USD).
     """
     if not _SHARED_AVAILABLE or _capital_ledger_mod is None:
         return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
     try:
         bal, source = _live_balance(fallback=_capital_fallback())
         m = _capital_ledger_mod.metrics(current_balance=bal)
+        # Override target_capital con el goal del usuario si lo configuró
+        if _user_settings_mod is not None:
+            try:
+                user_goal = _user_settings_mod.get_goal_usd()
+                if user_goal is not None and user_goal > 0:
+                    m["target_capital_usd"] = round(float(user_goal), 2)
+                    # Recalcular pl_target_remaining_usd con el nuevo target
+                    cur = m.get("current_balance_usd") or 0.0
+                    m["pl_target_remaining_usd"] = round(
+                        m["target_capital_usd"] - cur, 2
+                    )
+            except Exception:
+                pass
         m["balance_source"] = source
         m["ok"] = True
         return m
