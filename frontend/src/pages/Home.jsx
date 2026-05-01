@@ -24,6 +24,7 @@ import {
 } from "recharts";
 
 import { useSettings } from "@/lib/userMode";
+import { useAuth } from "@/lib/AuthProvider";
 import { lotsToSize } from "@/lib/glossary";
 import { apiGet } from "@/lib/api";
 
@@ -49,6 +50,7 @@ const fmtPct = (v, fr = 2) =>
 
 export default function Home() {
     const { settings, isNovato, isExperto } = useSettings();
+    const { isAdmin } = useAuth();
     const [mt5, setMt5] = useState(null);
     const [stats, setStats] = useState(null);
     const [procs, setProcs] = useState({});
@@ -258,7 +260,9 @@ export default function Home() {
                             />
                         </div>
 
-                        {/* CTAs */}
+                        {/* CTAs — los de admin (Configurar, Pausar) solo
+                            visibles si el usuario es admin. No-admin solo
+                            ve "Ver operaciones" (read-only). */}
                         <div className="flex flex-wrap gap-3 mt-2">
                             <Link
                                 to="/operaciones"
@@ -269,14 +273,18 @@ export default function Home() {
                                 Ver operaciones
                                 <ArrowRight size={14} />
                             </Link>
-                            <Link
-                                to="/configuracion"
-                                className="btn-sharp btn-xl flex items-center gap-2"
-                            >
-                                <Cpu size={14} />
-                                Configurar
-                            </Link>
-                            <HaltButton compact />
+                            {isAdmin ? (
+                                <>
+                                    <Link
+                                        to="/configuracion"
+                                        className="btn-sharp btn-xl flex items-center gap-2"
+                                    >
+                                        <Cpu size={14} />
+                                        Configurar
+                                    </Link>
+                                    <HaltButton compact />
+                                </>
+                            ) : null}
                         </div>
                     </>
                 )}

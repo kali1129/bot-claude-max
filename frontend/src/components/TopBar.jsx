@@ -14,6 +14,7 @@ import { useSettings } from "@/lib/userMode";
 import UserModeBadge from "@/components/atoms/UserModeBadge";
 import HaltButton from "@/components/atoms/HaltButton";
 import AuthCorner from "@/components/atoms/AuthCorner";
+import { useAuth } from "@/lib/AuthProvider";
 
 const fmtMoney = (v) => {
     const n = Number(v);
@@ -49,6 +50,7 @@ function StatCell({ label, value, accent = "white", testId }) {
 export default function TopBar() {
     const { settings } = useSettings();
     const preset = settings?.active_style_preset || {};
+    const { isAdmin } = useAuth();
 
     const [time, setTime] = useState(new Date());
     const [mt5, setMt5] = useState(null);
@@ -163,8 +165,12 @@ export default function TopBar() {
                 />
                 <div className="flex-1" />
                 <div className="flex items-center gap-2 px-4 border-l border-[var(--border)]">
-                    <UserModeBadge compact />
-                    <HaltButton compact />
+                    {/* UserModeBadge cambia settings GLOBALES — solo admin
+                        puede modificar. Los no-admins ven su mode actual
+                        en el badge AuthCorner si están logueados. */}
+                    {isAdmin ? <UserModeBadge compact /> : null}
+                    {/* HaltButton apaga el bot del admin. SOLO admin. */}
+                    {isAdmin ? <HaltButton compact /> : null}
                     <AuthCorner />
                     <button
                         type="button"

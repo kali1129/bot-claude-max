@@ -20,6 +20,7 @@ import Advanced from "@/pages/Advanced";
 import Live from "@/pages/Live";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
+import Admin from "@/pages/Admin";
 
 // Wrapper que combina OnboardingGate + AppShell (sidebar + topbar) para
 // las rutas "normales" del dashboard.
@@ -155,6 +156,16 @@ function App() {
                                                 <ExpertOnly>
                                                     <Advanced />
                                                 </ExpertOnly>
+                                            </RequireAdmin>
+                                        </ShellRoute>
+                                    }
+                                />
+                                <Route
+                                    path="/admin"
+                                    element={
+                                        <ShellRoute>
+                                            <RequireAdmin>
+                                                <Admin />
                                             </RequireAdmin>
                                         </ShellRoute>
                                     }

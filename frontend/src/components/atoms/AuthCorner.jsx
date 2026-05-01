@@ -5,26 +5,25 @@
 //   - Logged user (no admin): pill con email + botón Salir.
 //   - Logged admin: pill con email + badge ADMIN + botón Salir.
 //
-// Click en el pill abre dropdown con opciones rápidas.
+// Usa Radix DropdownMenu (Portal + z-index correcto) para evitar que el
+// dropdown quede oculto por overflow:hidden de algún parent. La versión
+// anterior usaba absolute positioning y a veces no se veía / no permitía
+// hacer click en "Cerrar sesión".
 
-import { useState, useRef, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { LogIn, LogOut, User, Shield, ChevronDown } from "lucide-react";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/lib/AuthProvider";
 
 export default function AuthCorner() {
     const { user, isAdmin, isAuthenticated, logout } = useAuth();
-    const navigate = useNavigate();
-    const [open, setOpen] = useState(false);
-    const ref = useRef(null);
-
-    useEffect(() => {
-        const onDoc = (e) => {
-            if (!ref.current || !ref.current.contains(e.target)) setOpen(false);
-        };
-        document.addEventListener("mousedown", onDoc);
-        return () => document.removeEventListener("mousedown", onDoc);
-    }, []);
 
     if (!isAuthenticated) {
         return (
@@ -43,52 +42,56 @@ export default function AuthCorner() {
     const label = user?.display_name || user?.email || "Usuario";
 
     return (
-        <div className="relative" ref={ref}>
-            <button
-                type="button"
-                onClick={() => setOpen((v) => !v)}
-                className={`btn-sharp flex items-center gap-2 ${isAdmin ? "primary" : ""}`}
-                data-testid="auth-user-pill"
-                title={user?.email}
-            >
-                {isAdmin ? <Shield size={12} /> : <User size={12} />}
-                <span className="hidden sm:inline truncate max-w-[120px]">
-                    {label}
-                </span>
-                <ChevronDown size={11} />
-            </button>
-            {open ? (
-                <div
-                    className="absolute right-0 mt-1 w-52 z-50 panel"
-                    role="menu"
-                    style={{ background: "var(--surface-2)" }}
+        <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <button
+                    type="button"
+                    className={`btn-sharp flex items-center gap-2 ${isAdmin ? "primary" : ""}`}
+                    data-testid="auth-user-pill"
+                    title={user?.email}
                 >
-                    <div className="px-3 py-2.5 border-b border-[var(--border)]">
-                        <div className="kicker mb-0.5">
-                            {isAdmin ? "ADMIN" : "USUARIO"}
-                        </div>
-                        <div className="font-mono text-xs truncate">
-                            {user?.email}
-                        </div>
+                    {isAdmin ? <Shield size={12} /> : <User size={12} />}
+                    <span className="hidden sm:inline truncate max-w-[120px]">
+                        {label}
+                    </span>
+                    <ChevronDown size={11} />
+                </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+                align="end"
+                className="w-56 bg-[var(--surface-2)] border-[var(--border)] z-[100]"
+                sideOffset={4}
+            >
+                <DropdownMenuLabel className="font-mono">
+                    <div className="kicker mb-0.5">
+                        {isAdmin ? "ADMIN" : "USUARIO"}
                     </div>
-                    {!isAdmin ? (
-                        <div className="px-3 py-2 text-[10px] text-[var(--text-faint)] border-b border-[var(--border)]">
+                    <div className="text-xs truncate font-normal text-[var(--text)]">
+                        {user?.email}
+                    </div>
+                </DropdownMenuLabel>
+                {!isAdmin ? (
+                    <>
+                        <DropdownMenuSeparator className="bg-[var(--border)]" />
+                        <div className="px-2 py-1.5 text-[10px] text-[var(--text-faint)]">
                             Modo demo. Pronto vas a poder conectar tu propia cuenta.
                         </div>
-                    ) : null}
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setOpen(false);
-                            logout();
-                        }}
-                        className="w-full text-left px-3 py-2.5 text-xs font-mono hover:bg-[var(--surface)] flex items-center gap-2 text-[var(--red)]"
-                    >
-                        <LogOut size={11} />
-                        Cerrar sesión
-                    </button>
-                </div>
-            ) : null}
-        </div>
+                    </>
+                ) : null}
+                <DropdownMenuSeparator className="bg-[var(--border)]" />
+                <DropdownMenuItem
+                    onSelect={(e) => {
+                        // Radix se cierra automáticamente; logout navega
+                        e.preventDefault();
+                        logout();
+                    }}
+                    className="text-[var(--red)] focus:text-[var(--red)] focus:bg-[var(--surface)] cursor-pointer flex items-center gap-2 text-xs font-mono"
+                    data-testid="auth-logout-btn"
+                >
+                    <LogOut size={11} />
+                    Cerrar sesión
+                </DropdownMenuItem>
+            </DropdownMenuContent>
+        </DropdownMenu>
     );
 }

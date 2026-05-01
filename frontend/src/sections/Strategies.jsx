@@ -77,7 +77,7 @@ function StatBar({ label, theoretical, real, unit, isGood }) {
 // --------------------------------------------------------------------------
 // StrategyCard
 // --------------------------------------------------------------------------
-function StrategyCard({ strategy, onActivate, activatingId }) {
+function StrategyCard({ strategy, onActivate, activatingId, readOnly = false }) {
     const colors = STRATEGY_COLORS[strategy.color] || STRATEGY_COLORS.gray;
     const Icon = STRATEGY_ICONS[strategy.type] || Target;
     const isActive = strategy.active;
@@ -224,6 +224,13 @@ function StrategyCard({ strategy, onActivate, activatingId }) {
                         <Shield size={12} className="inline mr-1" />
                         ESTRATEGIA ACTIVA
                     </div>
+                ) : readOnly ? (
+                    <div
+                        className="w-full text-center py-2 text-[10px] font-mono text-[var(--text-faint)] border border-[var(--border)] rounded"
+                        title="Solo el admin puede activar estrategias"
+                    >
+                        — solo lectura —
+                    </div>
                 ) : (
                     <button
                         onClick={() => onActivate(strategy.id)}
@@ -288,7 +295,7 @@ function PerformanceSummary({ strategies }) {
 // --------------------------------------------------------------------------
 // Strategies — main exported component
 // --------------------------------------------------------------------------
-export default function Strategies({ api, novato = false }) {
+export default function Strategies({ api, novato = false, readOnly = false }) {
     // novato: actualmente Strategies muestra todo. La página wrapper agrega
     // banner explicativo en novato. Aquí podríamos ocultar params crudos en
     // un futuro pase — por ahora basta con el wrapper externo.
@@ -361,6 +368,7 @@ export default function Strategies({ api, novato = false }) {
                                 strategy={s}
                                 onActivate={handleActivate}
                                 activatingId={activatingId}
+                                readOnly={readOnly}
                             />
                         ))}
                     </div>

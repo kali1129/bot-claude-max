@@ -47,7 +47,7 @@ function emptyForm(strategies, today) {
     };
 }
 
-export default function TradeJournal({ api, strategies, stats, onMutated }) {
+export default function TradeJournal({ api, strategies, stats, onMutated, readOnly = false }) {
     const today = new Date().toISOString().slice(0, 10);
     const [trades, setTrades] = useState([]);
     const [form, setForm] = useState(emptyForm(strategies, today));
@@ -139,6 +139,7 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
                             curva de capital se actualiza al cerrar.
                         </p>
                     </div>
+                    {!readOnly ? (
                     <button
                         type="button"
                         onClick={() => setShowForm((s) => !s)}
@@ -157,6 +158,7 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
                             </>
                         )}
                     </button>
+                    ) : null}
                 </div>
 
                 {/* Stats strip */}
@@ -191,8 +193,8 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
                     </div>
                 </div>
 
-                {/* Form */}
-                {showForm && (
+                {/* Form (oculto si readOnly — no-admin no puede crear/editar) */}
+                {showForm && !readOnly && (
                     <form
                         onSubmit={submit}
                         className="panel p-5 mb-3"
@@ -583,15 +585,17 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
                                             </span>
                                         </td>
                                         <td className="px-3 py-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => remove(t.id)}
-                                                className="text-[var(--text-faint)] hover:text-[var(--red)] transition-colors"
-                                                data-testid={`delete-trade-${t.id}`}
-                                                title="Borrar"
-                                            >
-                                                <Trash2 size={13} />
-                                            </button>
+                                            {!readOnly ? (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => remove(t.id)}
+                                                    className="text-[var(--text-faint)] hover:text-[var(--red)] transition-colors"
+                                                    data-testid={`delete-trade-${t.id}`}
+                                                    title="Borrar"
+                                                >
+                                                    <Trash2 size={13} />
+                                                </button>
+                                            ) : null}
                                         </td>
                                     </tr>
                                 ))

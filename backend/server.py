@@ -342,6 +342,140 @@ async def auth_info(
     }
 
 
+# ─────────────────────────── /api/admin/* ───────────────────────────
+# Panel de administración. SOLO accesible con role=admin (o legacy token).
+# Permite listar usuarios, ver detalles, modificar roles, banear, etc.
+# En FASE 2 también verá: cuenta MT5 conectada por user, su bot status,
+# sus trades, sus configs.
+
+@api_router.get("/admin/users")
+async def admin_list_users(
+    _admin=Depends(auth_mod.require_admin),
+    db=Depends(get_db),
+):
+    """Lista todos los usuarios registrados. SIN password_hash."""
+    if db is None:
+        raise HTTPException(503, "DB no disponible")
+    cursor = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
+    users = await cursor.to_list(length=10_000)
+    # Normalizar id (string) y date para JSON
+    out = []
+    for u in users:
+        u["id"] = str(u.pop("_id", u.get("id", "")))
+        out.append(u)
+    return {
+        "ok": True,
+        "count": len(out),
+        "users": out,
+    }
+
+
+@api_router.get("/admin/users/{user_id}")
+async def admin_get_user(
+    user_id: str,
+    _admin=Depends(auth_mod.require_admin),
+    db=Depends(get_db),
+):
+    """Detalle de un usuario + sus stats agregadas (FASE 2: trades, MT5)."""
+    if db is None:
+        raise HTTPException(503, "DB no disponible")
+    user = await db.users.find_one({"_id": user_id}, {"password_hash": 0})
+    if not user:
+        raise HTTPException(404, "usuario no existe")
+    user["id"] = str(user.pop("_id"))
+    # FASE 2: agregaremos sus trades, MT5 status, etc.
+    return {
+        "ok": True,
+        "user": user,
+        "trades_count": 0,         # placeholder hasta FASE 2
+        "broker_connected": False,  # placeholder hasta FASE 2
+        "broker": None,
+        "bot_active": False,
+    }
+
+
+class AdminUserUpdatePayload(BaseModel):
+    """Solo permite cambiar role y display_name por ahora.
+    Email/password se manejan por el usuario en FASE 2."""
+    role: Optional[Literal["admin", "user"]] = None
+    display_name: Optional[str] = Field(default=None, max_length=64)
+
+
+@api_router.patch("/admin/users/{user_id}",
+                   dependencies=[Depends(auth_mod.require_admin)])
+async def admin_update_user(
+    user_id: str,
+    payload: AdminUserUpdatePayload,
+    db=Depends(get_db),
+):
+    """Modifica role o display_name de un usuario. NO permite cambiar
+    email ni password — eso es responsabilidad del usuario."""
+    if db is None:
+        raise HTTPException(503, "DB no disponible")
+    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+    if not updates:
+        raise HTTPException(400, "nada para actualizar")
+    res = await db.users.update_one({"_id": user_id}, {"$set": updates})
+    if res.matched_count == 0:
+        raise HTTPException(404, "usuario no existe")
+    user = await db.users.find_one({"_id": user_id}, {"password_hash": 0})
+    user["id"] = str(user.pop("_id"))
+    return {"ok": True, "user": user}
+
+
+@api_router.delete("/admin/users/{user_id}",
+                    dependencies=[Depends(auth_mod.require_admin)])
+async def admin_delete_user(
+    user_id: str,
+    db=Depends(get_db),
+):
+    """Elimina un usuario. NO se puede eliminar al admin actual (o se
+    queda sin acceso)."""
+    if db is None:
+        raise HTTPException(503, "DB no disponible")
+    user = await db.users.find_one({"_id": user_id})
+    if not user:
+        raise HTTPException(404, "usuario no existe")
+    if user.get("role") == "admin":
+        # Conteo de admins — no permitir borrar el último
+        admin_count = await db.users.count_documents({"role": "admin"})
+        if admin_count <= 1:
+            raise HTTPException(409,
+                "no podés eliminar el último admin del sistema")
+    await db.users.delete_one({"_id": user_id})
+    return {"ok": True, "deleted_id": user_id}
+
+
+@api_router.get("/admin/stats")
+async def admin_stats(
+    _admin=Depends(auth_mod.require_admin),
+    db=Depends(get_db),
+):
+    """Stats agregadas para el dashboard admin: cuántos users, cuántos
+    admins, registros recientes, etc."""
+    if db is None:
+        raise HTTPException(503, "DB no disponible")
+    total_users = await db.users.count_documents({})
+    admins = await db.users.count_documents({"role": "admin"})
+    users = await db.users.count_documents({"role": "user"})
+    # Registros últimos 7 días
+    from datetime import timedelta as _td
+    cutoff = (datetime.now(timezone.utc) - _td(days=7)).isoformat()
+    recent = await db.users.count_documents({"created_at": {"$gte": cutoff}})
+    return {
+        "ok": True,
+        "users": {
+            "total": total_users,
+            "admins": admins,
+            "regular": users,
+            "registered_last_7d": recent,
+        },
+        "trades": {
+            "total": await db.trades.count_documents({}),
+        },
+    }
+
+
 # ───────────────────────── capital ledger ─────────────────────────
 # Importa los módulos compartidos. Si falla (ej. en tests), endpoints
 # devuelven 503.

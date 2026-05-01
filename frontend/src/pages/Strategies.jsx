@@ -2,6 +2,7 @@
 // oculta params crudos, banner explicativo "¿Cuál elegir?".
 
 import { useSettings } from "@/lib/userMode";
+import { useAuth } from "@/lib/AuthProvider";
 import { API_BASE } from "@/lib/api";
 
 import SectionHeader from "@/components/atoms/SectionHeader";
@@ -9,6 +10,7 @@ import StrategiesSection from "@/sections/Strategies";
 
 export default function StrategiesPage() {
     const { isNovato } = useSettings();
+    const { isAdmin } = useAuth();
 
     return (
         <section className="px-6 lg:px-10 py-8" data-testid="page-strategies">
@@ -45,7 +47,11 @@ export default function StrategiesPage() {
                     </div>
                 ) : null}
 
-                <StrategiesSection api={API_BASE} novato={isNovato} />
+                <StrategiesSection
+                    api={API_BASE}
+                    novato={isNovato}
+                    readOnly={!isAdmin}
+                />
             </div>
         </section>
     );

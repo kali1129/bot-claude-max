@@ -151,9 +151,11 @@ export default function Stats() {
                                                 strokeDasharray="3 3"
                                             />
                                             <XAxis
-                                                dataKey="trade_no"
-                                                tick={{ fill: "var(--text-faint)", fontSize: 10 }}
+                                                dataKey="date"
+                                                tick={{ fill: "var(--text-faint)", fontSize: 9 }}
                                                 stroke="var(--border)"
+                                                interval="preserveStartEnd"
+                                                minTickGap={30}
                                             />
                                             <YAxis
                                                 tick={{ fill: "var(--text-faint)", fontSize: 10 }}

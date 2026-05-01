@@ -9,6 +9,7 @@ import {
     Cog,
     LifeBuoy,
     FlaskConical,
+    Shield,
 } from "lucide-react";
 
 import { apiGet } from "@/lib/api";
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
     { to: "/configuracion", label: "Configuración", icon: Cog, code: "05", modes: ["novato", "experto"], adminOnly: true },
     { to: "/ayuda", label: "Ayuda", icon: LifeBuoy, code: "06", modes: ["novato", "experto"], adminOnly: false },
     { to: "/avanzado", label: "Avanzado", icon: FlaskConical, code: "07", modes: ["experto"], adminOnly: true },
+    { to: "/admin", label: "Admin Panel", icon: Shield, code: "★", modes: ["novato", "experto"], adminOnly: true, adminAccent: true },
 ];
 
 export default function Sidebar({ mobile = false, onNavigate }) {

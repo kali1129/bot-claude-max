@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { BookOpen } from "lucide-react";
 import { apiGet } from "@/lib/api";
 import { API_BASE } from "@/lib/api";
+import { useAuth } from "@/lib/AuthProvider";
 
 import SectionHeader from "@/components/atoms/SectionHeader";
 import EmptyState from "@/components/atoms/EmptyState";
@@ -14,6 +15,7 @@ import SkeletonPanel from "@/components/atoms/SkeletonPanel";
 import TradeJournal from "@/sections/TradeJournal";
 
 export default function Trades() {
+    const { isAdmin } = useAuth();
     const [planData, setPlanData] = useState(null);
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -69,23 +71,33 @@ export default function Trades() {
                         <EmptyState
                             icon={<BookOpen size={36} />}
                             title="Aún no hay operaciones"
-                            body="Cuando el bot opere o registres una manual, aparecerán acá. Podés registrar la primera ahora mismo."
-                            cta="Registrar trade manual"
-                            onCtaClick={() => {
-                                document
-                                    .querySelector('[data-testid="add-trade-toggle"]')
-                                    ?.click();
-                            }}
+                            body={
+                                isAdmin
+                                    ? "Cuando el bot opere o registres una manual, aparecerán acá. Podés registrar la primera ahora mismo."
+                                    : "Cuando el bot del admin opere, las operaciones aparecerán acá."
+                            }
+                            cta={isAdmin ? "Registrar trade manual" : null}
+                            onCtaClick={
+                                isAdmin
+                                    ? () => {
+                                          document
+                                              .querySelector('[data-testid="add-trade-toggle"]')
+                                              ?.click();
+                                      }
+                                    : null
+                            }
                         />
-                        {/* Aún así montamos TradeJournal abajo para que tengan el form a mano */}
-                        <div className="mt-6">
-                            <TradeJournal
-                                api={API_BASE}
-                                strategies={planData?.strategies || []}
-                                stats={stats}
-                                onMutated={fetchAll}
-                            />
-                        </div>
+                        {isAdmin ? (
+                            <div className="mt-6">
+                                <TradeJournal
+                                    api={API_BASE}
+                                    strategies={planData?.strategies || []}
+                                    stats={stats}
+                                    onMutated={fetchAll}
+                                    readOnly={false}
+                                />
+                            </div>
+                        ) : null}
                     </div>
                 </section>
             ) : (
@@ -94,6 +106,7 @@ export default function Trades() {
                     strategies={planData?.strategies || []}
                     stats={stats}
                     onMutated={fetchAll}
+                    readOnly={!isAdmin}
                 />
             )}
         </div>
