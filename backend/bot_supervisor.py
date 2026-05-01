@@ -143,8 +143,8 @@ async def start_bot(db, user_id: str) -> dict:
             "trial_end_at": running.get("trial_end_at"),
         }
 
-    # 2. ¿Tiene credenciales MT5?
-    has_creds = await broker_manager.has_creds(db, user_id)
+    # 2. ¿Tiene credenciales MT5 ACTIVAS? (puede tener demo+real, una activa)
+    has_creds = await broker_manager.has_active_creds(db, user_id)
     is_admin = await is_admin_user(db, user_id)
     if not has_creds and not is_admin:
         return {
@@ -222,7 +222,8 @@ async def start_bot(db, user_id: str) -> dict:
                 "reason": "NO_TEMPLATE",
                 "detail": spawn_error,
             }
-        # Descifrar password para pasarla por env al subprocess
+        # Descifrar password de la CUENTA ACTIVA (la que el usuario eligió
+        # via switch — puede ser demo o real)
         password = await broker_manager.get_decrypted_password(db, user_id)
         if not password:
             await db.bot_runs.update_one(
@@ -239,7 +240,7 @@ async def start_bot(db, user_id: str) -> dict:
                     "no pudimos descifrar tu password — re-conectá tu broker"
                 ),
             }
-        creds = await broker_manager.get_creds(db, user_id)
+        creds = await broker_manager.get_active_creds(db, user_id)
         try:
             spawn_info = await process_supervisor.start_bot_process(
                 user_id=user_id,
@@ -255,6 +256,11 @@ async def start_bot(db, user_id: str) -> dict:
                     "pid": spawn_info.get("pid"),
                     "prefix": spawn_info.get("prefix"),
                     "logs_dir": spawn_info.get("logs_dir"),
+                    # Persistir qué cuenta está corriendo en este run (para audit
+                    # y para que el switch sepa si tiene que reiniciar el bot).
+                    "broker_login": creds.get("mt5_login"),
+                    "broker_server": creds.get("mt5_server"),
+                    "broker_is_demo": bool(creds.get("is_demo")),
                 }},
             )
         except Exception as exc:

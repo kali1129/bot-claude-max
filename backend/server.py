@@ -453,29 +453,73 @@ async def auth_info(
 # En FASE 2 también verá: cuenta MT5 conectada por user, su bot status,
 # sus trades, sus configs.
 
+def _is_admin_systemd_running() -> bool:
+    """Detecta si el bot global del admin (systemd service
+    ``trading-auto-trader``) está activo. Esto NO usa bot_runs porque el
+    bot del admin no usa el supervisor per-user — corre como service.
+
+    Estrategia: chequear si hay algún proceso ``auto_trader.py`` corriendo
+    con un parent que NO sea uno de nuestros children registrados (porque
+    los children registrados son user-bots). Como heurística más simple
+    y robusta, vemos si systemd reporta active.
+    """
+    import subprocess
+    try:
+        res = subprocess.run(
+            ["systemctl", "is-active", "trading-auto-trader"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return res.stdout.strip() == "active"
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # systemctl no disponible (Windows dev) — fallback: ver si hay
+        # auto_trader.py en la lista de procesos del supervisor
+        return False
+
+
 @api_router.get("/admin/users")
 async def admin_list_users(
     _admin=Depends(auth_mod.require_admin),
     db=Depends(get_db),
 ):
     """Lista usuarios + broker connected + bot running + trial info.
-    Versión enriquecida — el frontend muestra todo en una tabla."""
+    Versión enriquecida multi-cuenta — el frontend muestra todo en tabla.
+
+    Nuevo: campo ``broker_accounts`` array con todas las cuentas (demo+real
+    si las dos). Mantenemos campos legacy ``broker_login`` etc. apuntando
+    a la cuenta ACTIVA para compat con UIs viejos.
+    """
     if db is None:
         raise HTTPException(503, "DB no disponible")
     cursor = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
     users = await cursor.to_list(length=10_000)
+    admin_systemd_running = _is_admin_systemd_running()
     out = []
     for u in users:
         uid = str(u.pop("_id", u.get("id", "")))
         u["id"] = uid
-        # Enrich con broker + bot
-        broker = await broker_manager.get_creds(db, uid)
+        is_admin = u.get("role") == "admin"
+        # Enrich con broker (lista) + bot
+        accounts = await broker_manager.list_creds(db, uid)
+        active = next((a for a in accounts if a.get("is_active")), None)
         bot = await bot_supervisor.status(db, uid)
-        u["broker_connected"] = bool(broker)
-        u["broker_demo"] = broker.get("is_demo") if broker else None
-        u["broker_login"] = broker.get("mt5_login") if broker else None
-        u["broker_server"] = broker.get("mt5_server") if broker else None
-        u["bot_running"] = bool(bot.get("running"))
+
+        u["broker_accounts"] = accounts            # nuevo: lista completa
+        u["broker_connected"] = len(accounts) > 0
+        u["broker_count"] = len(accounts)
+        # Legacy fields apuntan a la activa para que UIs viejos no rompan
+        u["broker_demo"] = active.get("is_demo") if active else None
+        u["broker_login"] = active.get("mt5_login") if active else None
+        u["broker_server"] = active.get("mt5_server") if active else None
+        u["broker_active_is_demo"] = (
+            active.get("is_demo") if active else None
+        )
+        # bot_running: para admin, mirar systemd (no bot_runs)
+        if is_admin:
+            u["bot_running"] = admin_systemd_running
+            u["bot_systemd"] = True   # señal al UI: este bot es global
+        else:
+            u["bot_running"] = bool(bot.get("running"))
+            u["bot_systemd"] = False
         u["trial_seconds_remaining"] = bot.get("trial_seconds_remaining")
         u["trial_expired"] = bool(bot.get("trial_expired"))
         out.append(u)
@@ -483,6 +527,7 @@ async def admin_list_users(
         "ok": True,
         "count": len(out),
         "users": out,
+        "admin_systemd_running": admin_systemd_running,
     }
 
 
@@ -492,7 +537,7 @@ async def admin_get_user(
     _admin=Depends(auth_mod.require_admin),
     db=Depends(get_db),
 ):
-    """Detalle de un usuario + broker + bot status + trial info."""
+    """Detalle de un usuario + broker (multi-cuenta) + bot status + trial."""
     if db is None:
         raise HTTPException(503, "DB no disponible")
     user = await db.users.find_one({"_id": user_id}, {"password_hash": 0})
@@ -500,16 +545,24 @@ async def admin_get_user(
         raise HTTPException(404, "usuario no existe")
     user["id"] = str(user.pop("_id"))
 
-    broker = await broker_manager.get_creds(db, user_id)
+    accounts = await broker_manager.list_creds(db, user_id)
+    active = next((a for a in accounts if a.get("is_active")), None)
     bot = await bot_supervisor.status(db, user_id)
 
     # Trades count (placeholder hasta FASE 3 — MT5 real per user)
     trades_count = await db.trades.count_documents({"user_id": user_id})
 
+    # Para admin, override running con systemd
+    is_admin = user.get("role") == "admin"
+    if is_admin:
+        bot["running_systemd"] = _is_admin_systemd_running()
+
     return {
         "ok": True,
         "user": user,
-        "broker": broker,                  # None si no conectado
+        "broker_accounts": accounts,       # lista (puede tener 0,1,2)
+        "broker_active": active,           # la que el bot usaría
+        "broker": active,                  # legacy alias
         "bot": bot,                        # running/last_run/trial info
         "trades_count": trades_count,
     }
@@ -590,9 +643,11 @@ async def admin_delete_user(
 
 
 # ─────────────────────────── /api/users/me/broker ───────────────────────
-# FASE 2: cada usuario conecta SU cuenta MT5. Las credenciales se cifran
-# con AES-GCM antes de persistir. El password en plain NUNCA viaja al
-# cliente — solo nuestro proceso server lo descifra al iniciar la conexión.
+# FASE 2 (multi-cuenta): cada usuario puede conectar UNA cuenta DEMO + UNA
+# cuenta REAL al mismo tiempo. Solo UNA es la "activa" — la que el bot usa.
+# Las credenciales se cifran con AES-GCM antes de persistir. El password
+# en plain NUNCA viaja al cliente — solo nuestro proceso server lo descifra
+# al iniciar la conexión MT5.
 
 class BrokerCredsPayload(BaseModel):
     mt5_login: int = Field(gt=0, lt=10**12)
@@ -606,17 +661,36 @@ class BrokerTestPayload(BrokerCredsPayload):
     """Mismo shape pero el endpoint /test no persiste."""
 
 
+class BrokerSwitchPayload(BaseModel):
+    """Switch entre la cuenta DEMO y la REAL del usuario."""
+    is_demo: bool
+    confirm_real: bool = False  # requerido si is_demo=False (pasar a real)
+
+
 @api_router.get("/users/me/broker")
 async def get_my_broker(
     current=Depends(auth_mod.require_user),
     db=Depends(get_db),
 ):
-    """Retorna info de tus credenciales (sin password). 404 si no
-    tenés conectado."""
-    creds = await broker_manager.get_creds(db, current.id)
-    if not creds:
-        return {"ok": True, "has_creds": False}
-    return {"ok": True, **creds}
+    """Retorna lista de cuentas conectadas (demo + real si las dos), con
+    indicador de cuál está activa.
+
+    Schema de respuesta:
+      {
+        "ok": True,
+        "has_creds": bool,
+        "accounts": [{...demo...}, {...real...}],  # 0, 1 o 2 elementos
+        "active": {...la que el bot usa...} | None
+      }
+    """
+    accounts = await broker_manager.list_creds(db, current.id)
+    active = await broker_manager.get_active_creds(db, current.id)
+    return {
+        "ok": True,
+        "has_creds": len(accounts) > 0,
+        "accounts": accounts,
+        "active": active,
+    }
 
 
 @api_router.post("/users/me/broker")
@@ -625,7 +699,14 @@ async def post_my_broker(
     current=Depends(auth_mod.require_user),
     db=Depends(get_db),
 ):
-    """Guarda/actualiza tus credenciales MT5. Encripta password."""
+    """Guarda/actualiza la cuenta MT5 del tipo (demo|real) indicado en
+    ``is_demo``. Encripta password.
+
+    - Si el usuario aún no tiene NINGUNA cuenta: ésta queda activa.
+    - Si ya tiene OTRA cuenta activa: ésta queda inactiva (el usuario
+      tiene que llamar /switch explícitamente para activarla).
+    - Si ya existe cuenta del MISMO tipo (mismo is_demo): la sobreescribe.
+    """
     if current.legacy_admin:
         # Legacy DASHBOARD_TOKEN no tiene user_id de verdad
         raise HTTPException(400, "usá un JWT con login real para conectar broker")
@@ -636,20 +717,125 @@ async def post_my_broker(
         mt5_server=payload.mt5_server,
         mt5_path=payload.mt5_path,
         is_demo=payload.is_demo,
+        set_active=True,  # solo aplica si no había ninguna activa
     )
-    return {"ok": True, **saved}
+    return {"ok": True, "account": saved}
+
+
+@api_router.post("/users/me/broker/switch")
+async def switch_my_broker(
+    payload: BrokerSwitchPayload,
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    """Cambia cuál cuenta usa el bot (demo ↔ real).
+
+    Si pasa a REAL, requiere ``confirm_real=True`` como protección extra
+    (el frontend ya muestra modal — esto es la última red).
+
+    Si el bot estaba corriendo con la otra cuenta, lo detiene y arranca
+    con la nueva. El usuario ve transición limpia: no quedan trades de
+    la cuenta vieja en la nueva.
+    """
+    if current.legacy_admin:
+        raise HTTPException(400, "usá un JWT con login real")
+
+    # Validación: si pasa a REAL, exigir confirmación explícita
+    if not payload.is_demo and not payload.confirm_real:
+        raise HTTPException(
+            400,
+            "Para activar la cuenta REAL tenés que confirmar el riesgo. "
+            "Volvé al modal y tickeá 'entiendo que opero con dinero real'."
+        )
+
+    # ¿Existe la cuenta del tipo solicitado?
+    target = await broker_manager.get_creds(db, current.id, is_demo=payload.is_demo)
+    if not target:
+        kind = "demo" if payload.is_demo else "real"
+        raise HTTPException(
+            404,
+            f"No tenés cuenta {kind.upper()} conectada. Conectala primero "
+            "en Mi Cuenta → Conectar broker."
+        )
+
+    # ¿Ya estaba activa? No-op
+    if target.get("is_active"):
+        return {
+            "ok": True,
+            "no_op": True,
+            "active": target,
+            "detail": "esa cuenta ya estaba activa",
+        }
+
+    # Detect: ¿el bot estaba corriendo? Si sí, hay que reiniciarlo
+    bot_state = await bot_supervisor.status(db, current.id)
+    was_running = bool(bot_state.get("running"))
+
+    # Stop bot si corría con la cuenta vieja
+    if was_running:
+        await bot_supervisor.stop_bot(
+            db, current.id, reason="broker_switch"
+        )
+
+    # Switch
+    new_active = await broker_manager.set_active(
+        db, current.id, is_demo=payload.is_demo
+    )
+
+    # Re-arranque del bot con la nueva cuenta (si estaba running)
+    restart_result = None
+    if was_running:
+        restart_result = await bot_supervisor.start_bot(db, current.id)
+
+    return {
+        "ok": True,
+        "active": new_active,
+        "was_running": was_running,
+        "restarted": bool(restart_result and restart_result.get("ok")),
+        "restart_error": (
+            restart_result.get("detail")
+            if restart_result and not restart_result.get("ok")
+            else None
+        ),
+        "detail": (
+            f"Activada cuenta {'DEMO' if payload.is_demo else 'REAL'}. "
+            + ("Bot reiniciado con la nueva cuenta." if was_running else
+               "Bot estaba detenido — andá a la sección del bot para arrancarlo.")
+        ),
+    }
 
 
 @api_router.delete("/users/me/broker")
 async def delete_my_broker(
+    is_demo: Optional[bool] = None,
     current=Depends(auth_mod.require_user),
     db=Depends(get_db),
 ):
-    """Elimina tus creds. Si tu bot está corriendo, también lo detiene."""
-    # Stop bot si está corriendo
-    await bot_supervisor.stop_bot(db, current.id, reason="broker_disconnected")
-    deleted = await broker_manager.delete_creds(db, current.id)
-    return {"ok": True, "deleted": deleted}
+    """Elimina una cuenta específica (?is_demo=true|false) o todas las
+    cuentas del usuario (sin query param).
+
+    Si la cuenta borrada era la activa y queda otra, el supervisor de
+    broker_manager auto-promueve la otra a activa. Si no queda ninguna,
+    el bot queda sin creds y un próximo /bot/start fallaría con NO_BROKER.
+
+    Si el bot está corriendo con la cuenta que estamos borrando, lo
+    detiene primero.
+    """
+    # Detect si la cuenta a borrar es la activa (para decidir si parar bot)
+    active = await broker_manager.get_active_creds(db, current.id)
+    is_active_being_deleted = (
+        active is not None and (
+            is_demo is None or  # borra todo
+            bool(active.get("is_demo")) == bool(is_demo)
+        )
+    )
+    if is_active_being_deleted:
+        await bot_supervisor.stop_bot(
+            db, current.id, reason="broker_disconnected"
+        )
+
+    deleted = await broker_manager.delete_creds(db, current.id, is_demo=is_demo)
+    return {"ok": True, **deleted}
 
 
 @api_router.post("/users/me/broker/test")
@@ -659,17 +845,21 @@ async def test_my_broker(
     db=Depends(get_db),
 ):
     """Test connection (sin guardar). Persiste el resultado del test
-    si las creds del usuario ya están guardadas."""
+    contra la cuenta del tipo (is_demo) si ya está guardada."""
     res = await broker_manager.test_connection_live(
         mt5_login=payload.mt5_login,
         mt5_password=payload.mt5_password,
         mt5_server=payload.mt5_server,
         mt5_path=payload.mt5_path,
     )
-    # Si user ya tiene creds guardadas, persiste el resultado del test.
-    if await broker_manager.has_creds(db, current.id):
+    # Si user ya tiene la cuenta del mismo tipo guardada, persiste el resultado
+    existing = await broker_manager.get_creds(
+        db, current.id, is_demo=payload.is_demo
+    )
+    if existing:
         await broker_manager.record_test_result(
             db, current.id,
+            is_demo=payload.is_demo,
             ok=bool(res.get("ok")),
             error=res.get("error"),
         )

@@ -9,7 +9,8 @@ import { useSettings } from "@/lib/userMode";
 export default function ReferralBanner({ variant = "compact", url, label }) {
     const { settings } = useSettings();
     const partner = settings?.referral_partner || {};
-    const finalUrl = url || partner.url || "https://www.xm.com/";
+    const finalUrl = url || partner.url ||
+        "https://www.xmglobal.com/referral?token=rTWdnQRq4uSRfxucpQRd2Q";
     const finalLabel = label || partner.label || "XM Global";
 
     if (variant === "feature") {

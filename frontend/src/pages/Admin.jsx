@@ -306,7 +306,41 @@ export default function Admin() {
                                                     </span>
                                                 </td>
                                                                 <td className="px-2 py-2.5">
-                                                    {u.broker_connected ? (
+                                                    {(u.broker_accounts && u.broker_accounts.length > 0) ? (
+                                                        <div className="flex flex-col gap-0.5">
+                                                            {u.broker_accounts.map((a) => (
+                                                                <div
+                                                                    key={a.id || `${a.is_demo}_${a.mt5_login}`}
+                                                                    className="flex items-center gap-1 text-[10px]"
+                                                                    title={`${a.is_demo ? "DEMO" : "REAL"} · ${a.mt5_server}`}
+                                                                >
+                                                                    <span
+                                                                        className="kicker"
+                                                                        style={{
+                                                                            color: a.is_active
+                                                                                ? "var(--green-bright)"
+                                                                                : "var(--text-faint)",
+                                                                        }}
+                                                                    >
+                                                                        {a.is_active ? "★" : "○"}
+                                                                    </span>
+                                                                    <span
+                                                                        style={{
+                                                                            color: a.is_demo
+                                                                                ? "var(--blue)"
+                                                                                : "var(--amber)",
+                                                                        }}
+                                                                    >
+                                                                        {a.is_demo ? "DEMO" : "REAL"}
+                                                                    </span>
+                                                                    <span className="text-[9px] text-[var(--text-faint)]">
+                                                                        {a.mt5_login}
+                                                                    </span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    ) : u.broker_connected ? (
+                                                        // Fallback compat (server viejo sin broker_accounts)
                                                         <div className="flex items-center gap-1">
                                                             <span className="kicker text-[var(--green-bright)]">●</span>
                                                             <span className="text-[10px]">
@@ -322,8 +356,14 @@ export default function Admin() {
                                                 <td className="px-2 py-2.5">
                                                     {u.bot_running ? (
                                                         <div className="flex flex-col">
-                                                            <span className="kicker text-[var(--green-bright)]">● ACTIVO</span>
-                                                            {u.trial_seconds_remaining != null ? (
+                                                            <span className="kicker text-[var(--green-bright)]">
+                                                                ● ACTIVO
+                                                            </span>
+                                                            {u.bot_systemd ? (
+                                                                <span className="text-[9px] text-[var(--green-bright)]">
+                                                                    bot global (systemd)
+                                                                </span>
+                                                            ) : u.trial_seconds_remaining != null ? (
                                                                 <span className="text-[9px] text-[var(--text-faint)]">
                                                                     {u.trial_expired ? (
                                                                         <span className="text-[var(--red)]">trial vencido</span>
@@ -339,7 +379,7 @@ export default function Admin() {
                                                         </div>
                                                     ) : (
                                                         <span className="text-[var(--text-faint)] italic text-[10px]">
-                                                            inactivo
+                                                            {isAdminRole ? "systemd inactivo" : "inactivo"}
                                                         </span>
                                                     )}
                                                 </td>
