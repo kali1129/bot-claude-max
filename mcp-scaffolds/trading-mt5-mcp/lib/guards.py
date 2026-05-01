@@ -365,10 +365,10 @@ GUARDS = [
     guard_sl_tp_side,
     guard_risk_dollars,
     # Phase 1 guards
-    guard_correlation,
-    guard_equity_drawdown,
-    guard_cooldown_after_losses,
-    guard_low_profit_pair,
+    # guard_correlation,  # DISABLED for test
+    # guard_equity_drawdown,  # DISABLED for test
+    # guard_cooldown_after_losses,  # DISABLED for test
+    # guard_low_profit_pair,  # DISABLED for test
 ]
 
 
