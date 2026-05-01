@@ -21,6 +21,7 @@ from . import regime
 from . import correlation
 from . import sizing_kelly
 from . import user_settings
+from . import equity_sampler
 
 __all__ = [
     "ensure_utc",
@@ -47,4 +48,5 @@ __all__ = [
     "correlation",
     "sizing_kelly",
     "user_settings",
+    "equity_sampler",
 ]

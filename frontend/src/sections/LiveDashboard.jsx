@@ -25,7 +25,7 @@ import { Cpu, Wallet, ShieldCheck, AlertTriangle, Pause, Radio, Activity,  } fro
 import { apiGet } from "@/lib/api";
 
 const TICK_MS = 3000;
-const MAX_SAMPLES = 200;          // ~10 min at 3s/sample
+const MAX_SAMPLES = 1000;         // ~hasta 24h cuando se siembra de /api/equity/samples
 
 const fmtMoney = (v, fr = 2) =>
     typeof v === "number" && Number.isFinite(v)
@@ -65,6 +65,22 @@ function EquityHero({ samples, balance, equity, todayPct, dailyCapPct }) {
         { t: 0, equity: baseline },
         { t: 1, equity: latest },
     ];
+
+    // Sublabel: "desde {fecha del primer sample}" — muestra que la serie es
+    // persistida desde que el bot arrancó, no desde que abriste el tab.
+    const firstTs = samples.length > 0 ? samples[0].t : null;
+    let sinceLabel = "desde que abriste el tablero";
+    if (firstTs) {
+        const ageMs = Date.now() - firstTs;
+        const ageH = ageMs / 3_600_000;
+        if (ageH < 1) {
+            sinceLabel = `desde hace ${Math.max(1, Math.round(ageMs / 60_000))} min`;
+        } else if (ageH < 24) {
+            sinceLabel = `desde hace ${ageH.toFixed(1)} h`;
+        } else {
+            sinceLabel = `desde hace ${(ageH / 24).toFixed(1)} días`;
+        }
+    }
     return (
         <div className="panel p-6 col-span-2" data-testid="equity-hero">
             <div className="flex items-start justify-between">
@@ -83,7 +99,7 @@ function EquityHero({ samples, balance, equity, todayPct, dailyCapPct }) {
                             {up ? "▲" : "▼"} {fmtMoney(Math.abs(change))} ({fmtPct(changePct)})
                         </div>
                         <span className="text-[var(--text-faint)] text-xs font-mono">
-                            desde que abriste el tablero · saldo cerrado: {fmtMoney(balance)}
+                            {sinceLabel} · saldo cerrado: {fmtMoney(balance)}
                         </span>
                     </div>
                 </div>
@@ -436,10 +452,37 @@ export default function LiveDashboard({ api, novato = false, dailyCapPct }) {
     const [lastIterTs, setLastIterTs] = useState(null);
     const [discipline, setDiscipline] = useState(null);
     const [capital, setCapital] = useState(null);
-    // useState (no useRef) para que React re-renderice cuando llegan nuevos
-    // samples — antes se quedaba quieto el sparkline porque samples era un
-    // ref mutable.
+    // El chart de equity se siembra desde el backend al montar (samples
+    // persistidas en disco por equity_sampler). Después se appendean ticks
+    // nuevos en memoria. Esto resuelve el problema "el chart se reinicia
+    // cada vez que entro" — ahora la serie sobrevive refresh / cierre / multi-tab.
     const [samples, setSamples] = useState([]);
+    const [samplesLoaded, setSamplesLoaded] = useState(false);
+
+    // Fetch inicial de samples persistidas (last 24h por default).
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const r = await axios.get(`${api}/equity/samples?hours=24&max_n=500`);
+                if (cancelled) return;
+                if (r.data?.ok && Array.isArray(r.data.samples)) {
+                    // Convertir formato backend {ts, equity, balance} →
+                    // formato chart {t, equity}
+                    const seeded = r.data.samples.map((s) => ({
+                        t: new Date(s.ts).getTime(),
+                        equity: typeof s.equity === "number" ? s.equity : s.balance,
+                    }));
+                    setSamples(seeded);
+                }
+            } catch {
+                // silent — chart caerá al modo "in-memory only"
+            } finally {
+                if (!cancelled) setSamplesLoaded(true);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [api]);
 
     const refresh = useCallback(async () => {
         try {

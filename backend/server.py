@@ -80,10 +80,71 @@ async def lifespan(_app: FastAPI):
         await state.db.trades.create_index("client_id", unique=True, sparse=True)
         await state.db.checklists.create_index("date", unique=True)
         log.info("connected to mongo db=%s", db_name)
+    # Background equity sampler — persiste samples cada N segundos para que
+    # el chart del dashboard sobreviva refresh / cierre de tab. Sin esto, el
+    # chart arrancaba desde cero en cada visita.
+    _start_equity_sampler()
     yield
+    _stop_equity_sampler()
     if state.mongo_client is not None:
         state.mongo_client.close()
         log.info("mongo connection closed")
+
+
+# ─────────────────────────── equity sampler thread ───────────────────────────
+
+_sampler_thread = None
+
+
+def _read_balance_for_sampler():
+    """Callback para el SamplerThread: retorna (balance, equity) live de MT5,
+    o None si no hay conexión / cuenta no inicializada."""
+    try:
+        bal, source = _live_balance(fallback=_capital_fallback())
+        if source != "mt5":
+            return None     # no muestreamos durante fallback (sin MT5 real)
+        # equity = balance + unrealized_pnl si está disponible
+        try:
+            import mt5_bridge
+            info = mt5_bridge.status()
+            if info.get("connected") and info.get("account"):
+                eq = info["account"].get("equity")
+                if isinstance(eq, (int, float)):
+                    return (float(bal), float(eq))
+        except Exception:
+            pass
+        return (float(bal), float(bal))
+    except Exception:
+        return None
+
+
+def _start_equity_sampler():
+    global _sampler_thread
+    if not _SHARED_AVAILABLE or _equity_sampler_mod is None:
+        log.warning("equity_sampler not available — chart will be ephemeral")
+        return
+    if _sampler_thread is not None and _sampler_thread.is_alive():
+        return
+    try:
+        _sampler_thread = _equity_sampler_mod.SamplerThread(
+            read_callback=_read_balance_for_sampler,
+            interval_sec=int(os.environ.get("EQUITY_SAMPLE_INTERVAL_SEC", "30")),
+        )
+        _sampler_thread.start()
+        log.info("equity_sampler thread started (interval=%ds)",
+                 _sampler_thread.interval)
+    except Exception as exc:
+        log.warning("failed to start equity_sampler: %s", exc)
+
+
+def _stop_equity_sampler():
+    global _sampler_thread
+    if _sampler_thread is not None:
+        try:
+            _sampler_thread.stop()
+        except Exception:
+            pass
+        _sampler_thread = None
 
 
 app = FastAPI(title="Futures Trading Plan Dashboard", lifespan=lifespan)
@@ -220,6 +281,7 @@ try:
     from common import expectancy_tracker as _expectancy_mod
     from common import regime as _regime_mod
     from common import user_settings as _user_settings_mod
+    from common import equity_sampler as _equity_sampler_mod
     _SHARED_AVAILABLE = True
 except ImportError as exc:
     log.warning("shared modules not importable: %s", exc)
@@ -227,6 +289,7 @@ except ImportError as exc:
     _expectancy_mod = None  # type: ignore
     _regime_mod = None  # type: ignore
     _user_settings_mod = None  # type: ignore
+    _equity_sampler_mod = None  # type: ignore
     _SHARED_AVAILABLE = False
 
 
@@ -273,11 +336,18 @@ class CapitalResetPayload(BaseModel):
 async def post_capital_reset(payload: CapitalResetPayload):
     """``/api/capital/reset`` — establece un nuevo punto de partida.
 
-    Usar cuando recargás cuenta demo o después de un cashout en live."""
+    Usar cuando recargás cuenta demo o después de un cashout en live.
+    También archiva los equity samples viejos para que el chart arranque
+    limpio desde el nuevo starting_balance."""
     if not _SHARED_AVAILABLE or _capital_ledger_mod is None:
         raise HTTPException(503, "shared modules not available")
     ledger = _capital_ledger_mod.reset(payload.starting_balance,
                                         note=payload.note or "via api")
+    if _equity_sampler_mod is not None:
+        try:
+            _equity_sampler_mod.reset(archive=True)
+        except Exception:
+            pass
     return {"ok": True, "ledger": ledger}
 
 
@@ -294,6 +364,11 @@ async def post_capital_deposit(payload: CapitalEventPayload):
     ledger = _capital_ledger_mod.record_deposit(payload.amount,
                                                   balance_after=bal,
                                                   note=payload.note or "via api")
+    if _equity_sampler_mod is not None:
+        try:
+            _equity_sampler_mod.reset(archive=True)
+        except Exception:
+            pass
     return {"ok": True, "ledger": ledger}
 
 
@@ -305,7 +380,58 @@ async def post_capital_withdrawal(payload: CapitalEventPayload):
     ledger = _capital_ledger_mod.record_withdrawal(payload.amount,
                                                      balance_after=bal,
                                                      note=payload.note or "via api")
+    if _equity_sampler_mod is not None:
+        try:
+            _equity_sampler_mod.reset(archive=True)
+        except Exception:
+            pass
     return {"ok": True, "ledger": ledger}
+
+
+# ───────────────────────── equity samples ─────────────────────────
+
+@api_router.get("/equity/samples")
+async def get_equity_samples(hours: float = 24.0, max_n: int = 500):
+    """Series temporal de equity persistida en disco.
+
+    El chart del dashboard consume este endpoint al montarse para tener
+    el histórico desde que el bot arrancó (no desde que el usuario abrió
+    el browser). Frontend luego puede append-ear samples nuevas en memoria.
+
+    Args:
+      hours: ventana hacia atrás (default 24h, max 720h = 30 días).
+      max_n: cap de samples retornadas (default 500). Si hay más se hace
+        downsample uniforme.
+    """
+    if not _SHARED_AVAILABLE or _equity_sampler_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE", "samples": []}
+    hours = max(0.0, min(720.0, float(hours)))
+    max_n = max(10, min(5000, int(max_n)))
+    samples = _equity_sampler_mod.get_samples(hours=hours, max_n=max_n)
+    return {
+        "ok": True,
+        "samples": samples,
+        "count": len(samples),
+        "hours": hours,
+        "max_n": max_n,
+    }
+
+
+@api_router.get("/equity/stats")
+async def get_equity_stats():
+    """Diagnóstico del sampler: file size, count, primer/último sample."""
+    if not _SHARED_AVAILABLE or _equity_sampler_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    return {"ok": True, **_equity_sampler_mod.stats()}
+
+
+@api_router.post("/equity/reset", dependencies=[Depends(require_token)])
+async def post_equity_reset():
+    """Limpia el archivo de samples (archiva el viejo). Útil para empezar
+    chart limpio sin tener que hacer reset de balance."""
+    if not _SHARED_AVAILABLE or _equity_sampler_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    return _equity_sampler_mod.reset(archive=True)
 
 
 # ───────────────────────── expectancy ─────────────────────────
