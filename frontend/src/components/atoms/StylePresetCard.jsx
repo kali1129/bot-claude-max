@@ -101,7 +101,13 @@ export default function StylePresetCard({
                 />
                 <Stat
                     label="max pos"
-                    value={preset.max_pos != null ? preset.max_pos : "—"}
+                    value={
+                        preset.max_open_positions != null
+                            ? preset.max_open_positions
+                            : preset.max_pos != null
+                            ? preset.max_pos
+                            : "—"
+                    }
                 />
             </div>
         </button>

@@ -87,6 +87,23 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Futures Trading Plan Dashboard", lifespan=lifespan)
+
+
+# Reescribir validation errors de Pydantic (default 422) a 400 para matchear
+# el contrato API documentado. El payload mantiene el detail estructurado
+# de FastAPI con los campos que fallaron.
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.errors(), "body": exc.body},
+    )
+
+
 api_router = APIRouter(prefix="/api")
 
 

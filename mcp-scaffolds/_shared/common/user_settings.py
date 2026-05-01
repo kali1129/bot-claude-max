@@ -213,10 +213,14 @@ def validate(settings: dict) -> dict:
         raise ValueError(f"style debe ser uno de {list(STYLE_PRESETS)}")
     out["style"] = style
 
-    # sessions
-    sessions = out.get("sessions") or ["24/7"]
-    if not isinstance(sessions, list) or not sessions:
-        raise ValueError("sessions debe ser lista no vacía")
+    # sessions — distinguir "no enviado" (None → default) de "[] explícito" (rechazar)
+    sessions = out.get("sessions")
+    if sessions is None:
+        sessions = ["24/7"]
+    elif not isinstance(sessions, list):
+        raise ValueError("sessions debe ser una lista")
+    elif len(sessions) == 0:
+        raise ValueError("sessions no puede ser lista vacía. Usá ['24/7'] para operar siempre.")
     valid = set(TRADING_SESSIONS.keys())
     sessions = [s.strip().lower() for s in sessions]
     bad = [s for s in sessions if s not in valid]

@@ -66,7 +66,7 @@ export default function Sidebar({ mobile = false, onNavigate }) {
     const preset = settings?.active_style_preset || {};
     const riskPct = preset.risk_pct ?? "—";
     const dailyDD = preset.max_daily_loss_pct ?? "—";
-    const maxPos = preset.max_pos ?? "—";
+    const maxPos = preset.max_open_positions ?? preset.max_pos ?? "—";
 
     const containerClasses = mobile
         ? "panel border-l-0 border-t-0 border-b-0 flex flex-col h-full"
