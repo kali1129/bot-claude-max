@@ -73,7 +73,7 @@ class BreakoutHunter(Strategy):
 
     min_score = 65
     sl_atr_mult = 2.0
-    tp_atr_mult = 3.0   # 3:1 R:R
+    tp_atr_mult = 6.0   # 3:1 R:R
 
     donchian_period = 20
     # Market & schedule: breakouts happen at session opens

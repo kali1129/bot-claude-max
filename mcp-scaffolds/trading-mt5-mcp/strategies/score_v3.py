@@ -73,7 +73,7 @@ class ScoreV3(Strategy):
 
     min_score = 75
     sl_atr_mult = 1.5
-    tp_atr_mult = 2.0
+    tp_atr_mult = 4.5
     # Market & schedule: general purpose, standard active forex hours
     preferred_symbols = None  # all symbols
     blocked_symbols = frozenset()
