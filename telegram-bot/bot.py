@@ -37,23 +37,42 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))
 HALT_FILE = os.path.expanduser(os.getenv("HALT_FILE", "/opt/trading-bot/state/.HALT"))
 
 # === Authorization: solo chat_ids declarados pueden usar el bot ===
-# Múltiples chat ids separados por coma en TELEGRAM_ALLOWED_CHATS, o
-# default = el chat_id principal.
+# Fuentes (union):
+#   1. ENV TELEGRAM_ALLOWED_CHATS (admin/dueño del bot)
+#   2. user_settings.telegram_chat_ids (usuarios agregados desde dashboard)
+# Sin esto, el bot NO arranca (refusa por seguridad).
 _raw_allowed = os.getenv("TELEGRAM_ALLOWED_CHATS", CHAT_ID)
-ALLOWED_CHAT_IDS = {
+ALLOWED_CHAT_IDS_ENV = {
     int(s.strip()) for s in _raw_allowed.split(",") if s.strip().lstrip("-").isdigit()
 }
 
 # Hookear con _shared/common para acceder al capital ledger y expectancy
 sys.path.insert(0, "/opt/trading-bot/app/mcp-scaffolds/_shared")
 try:
-    from common import capital_ledger, expectancy_tracker  # type: ignore
+    from common import capital_ledger, expectancy_tracker, user_settings  # type: ignore
     _SHARED_OK = True
 except ImportError as exc:
     log.warning("shared modules not importable: %s", exc)
     capital_ledger = None  # type: ignore
     expectancy_tracker = None  # type: ignore
+    user_settings = None  # type: ignore
     _SHARED_OK = False
+
+
+def _allowed_chat_ids() -> set:
+    """Retorna union(env TELEGRAM_ALLOWED_CHATS, user_settings.telegram_chat_ids).
+
+    Esto permite que el usuario agregue chats desde el dashboard o con
+    /add_chat sin reiniciar el servicio.
+    """
+    ids = set(ALLOWED_CHAT_IDS_ENV)
+    if user_settings is not None:
+        try:
+            for c in user_settings.telegram_chat_ids():
+                ids.add(int(c))
+        except Exception:
+            pass
+    return ids
 
 RED = "\U0001f534"
 GREEN = "\U0001f7e2"
@@ -61,11 +80,11 @@ WARN = "⚠️"
 
 
 def _authorized(update: Update) -> bool:
-    """True si el chat es uno de los autorizados."""
+    """True si el chat es uno de los autorizados (env + user_settings)."""
     chat = update.effective_chat
     if chat is None:
         return False
-    return int(chat.id) in ALLOWED_CHAT_IDS
+    return int(chat.id) in _allowed_chat_ids()
 
 
 def authorize(handler):
@@ -325,6 +344,73 @@ async def cmd_journal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def cmd_my_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """``/my_id`` — devuelve el chat_id de quien escribe (NO requiere auth).
+
+    Útil para que un usuario nuevo descubra su chat_id y luego lo agregue
+    desde el dashboard web (o que el admin lo agregue con /add_chat)."""
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    if chat_id is None:
+        return
+    msg = (
+        f"Tu chat\\_id es: `{chat_id}`\n\n"
+        "Copia ese número y pégalo en el dashboard, sección "
+        "*Configuración → Telegram* para recibir notificaciones de "
+        "tus operaciones.\n\n"
+        "Si todavía no estás autorizado, este es el único comando que "
+        "te responde."
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+@authorize
+async def cmd_add_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """``/add_chat N`` — agrega un chat_id a la lista autorizada.
+
+    Solo accesible para chat_ids ya autorizados (admin)."""
+    if user_settings is None:
+        await update.message.reply_text("user_settings no disponible")
+        return
+    args = ctx.args or []
+    if not args:
+        await update.message.reply_text(
+            "Uso: /add_chat 123456789\n\n"
+            "Pedile a la otra persona que te diga su chat\\_id "
+            "(ejecutando /my\\_id en el bot)."
+        )
+        return
+    try:
+        new_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("chat_id inválido")
+        return
+    user_settings.add_telegram_chat(new_id)
+    await update.message.reply_text(
+        f"✅ Chat `{new_id}` agregado. Recibirá notificaciones de "
+        f"operaciones desde ahora.",
+        parse_mode="Markdown"
+    )
+
+
+@authorize
+async def cmd_remove_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if user_settings is None:
+        await update.message.reply_text("user_settings no disponible")
+        return
+    args = ctx.args or []
+    if not args:
+        await update.message.reply_text("Uso: /remove_chat 123456789")
+        return
+    try:
+        cid = int(args[0])
+    except ValueError:
+        await update.message.reply_text("chat_id inválido")
+        return
+    user_settings.remove_telegram_chat(cid)
+    await update.message.reply_text(f"✅ Chat `{cid}` removido.",
+                                     parse_mode="Markdown")
+
+
 @authorize
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = (
@@ -336,6 +422,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/withdrawal N — registrar retiro\n"
         "/expectancy \\[min\\_n\\] — top combos\n"
         "/journal — últimos 5 trades\n"
+        "/my\\_id — tu chat\\_id (para configurar notificaciones)\n"
+        "/add\\_chat N — agregar chat autorizado\n"
+        "/remove\\_chat N — quitar chat autorizado\n"
         "/halt — parar el bot\n"
         "/resume — reanudar"
     )
@@ -344,8 +433,11 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def send_alert(app, message):
     try:
-        for cid in ALLOWED_CHAT_IDS:
-            await app.bot.send_message(chat_id=cid, text=message)
+        for cid in _allowed_chat_ids():
+            try:
+                await app.bot.send_message(chat_id=cid, text=message)
+            except Exception as e:
+                log.warning("send to %s failed: %s", cid, e)
     except Exception as e:
         log.error("Failed to send Telegram alert: %s", e)
 
@@ -368,27 +460,35 @@ async def poll_signals(app):
 
 async def post_init(app):
     await app.bot.set_my_commands([
-        BotCommand("status", "System status + daily PnL"),
-        BotCommand("capital", "Capital vs target vs peak"),
-        BotCommand("reset_balance", "New starting balance"),
-        BotCommand("deposit", "Record deposit"),
-        BotCommand("withdrawal", "Record withdrawal"),
-        BotCommand("expectancy", "Top profitable combos"),
-        BotCommand("journal", "Recent trades"),
-        BotCommand("halt", "Emergency stop"),
-        BotCommand("resume", "Resume after halt"),
-        BotCommand("help", "Show commands"),
+        BotCommand("status", "Estado del bot"),
+        BotCommand("capital", "Capital actual vs meta"),
+        BotCommand("expectancy", "Combos rentables"),
+        BotCommand("journal", "Últimos trades"),
+        BotCommand("my_id", "Tu chat_id (para configurar notifs)"),
+        BotCommand("reset_balance", "Nuevo starting balance"),
+        BotCommand("deposit", "Registrar depósito"),
+        BotCommand("withdrawal", "Registrar retiro"),
+        BotCommand("add_chat", "Agregar chat (admin)"),
+        BotCommand("remove_chat", "Quitar chat (admin)"),
+        BotCommand("halt", "Parar bot (emergencia)"),
+        BotCommand("resume", "Reanudar"),
+        BotCommand("help", "Lista de comandos"),
     ])
     asyncio.create_task(poll_signals(app))
+    chats = _allowed_chat_ids()
     await send_alert(app, GREEN + " Trading Bot online (auth enabled).")
-    log.info("Telegram bot started, allowed chats: %s", ALLOWED_CHAT_IDS)
+    log.info("Telegram bot started, allowed chats: %s", chats)
 
 
 def main():
-    if not ALLOWED_CHAT_IDS:
-        log.error("TELEGRAM_ALLOWED_CHATS empty — refusing to start without auth")
+    if not ALLOWED_CHAT_IDS_ENV and not (user_settings and user_settings.telegram_chat_ids()):
+        log.error("No authorized chats — refusing to start without auth")
         sys.exit(1)
     app = Application.builder().token(TOKEN).post_init(post_init).build()
+    # /my_id es PÚBLICO (no @authorize) para que usuarios nuevos descubran
+    # su id y se puedan agregar desde el dashboard.
+    app.add_handler(CommandHandler("my_id", cmd_my_id))
+    # Comandos protegidos
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("capital", cmd_capital))
     app.add_handler(CommandHandler("reset_balance", cmd_reset_balance))
@@ -396,6 +496,8 @@ def main():
     app.add_handler(CommandHandler("withdrawal", cmd_withdrawal))
     app.add_handler(CommandHandler("expectancy", cmd_expectancy))
     app.add_handler(CommandHandler("journal", cmd_journal))
+    app.add_handler(CommandHandler("add_chat", cmd_add_chat))
+    app.add_handler(CommandHandler("remove_chat", cmd_remove_chat))
     # Aliases legacy
     app.add_handler(CommandHandler("news", cmd_journal))
     app.add_handler(CommandHandler("risk", cmd_capital))

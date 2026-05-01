@@ -20,6 +20,7 @@ from . import expectancy_tracker
 from . import regime
 from . import correlation
 from . import sizing_kelly
+from . import user_settings
 
 __all__ = [
     "ensure_utc",
@@ -45,4 +46,5 @@ __all__ = [
     "regime",
     "correlation",
     "sizing_kelly",
+    "user_settings",
 ]

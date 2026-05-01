@@ -202,12 +202,14 @@ try:
     from common import capital_ledger as _capital_ledger_mod
     from common import expectancy_tracker as _expectancy_mod
     from common import regime as _regime_mod
+    from common import user_settings as _user_settings_mod
     _SHARED_AVAILABLE = True
 except ImportError as exc:
     log.warning("shared modules not importable: %s", exc)
     _capital_ledger_mod = None  # type: ignore
     _expectancy_mod = None  # type: ignore
     _regime_mod = None  # type: ignore
+    _user_settings_mod = None  # type: ignore
     _SHARED_AVAILABLE = False
 
 
@@ -303,6 +305,95 @@ async def get_expectancy_heatmap(strategy_id: str, symbol: str):
     if not _SHARED_AVAILABLE or _expectancy_mod is None:
         return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
     return {"ok": True, "heatmap": _expectancy_mod.hour_heatmap(strategy_id, symbol)}
+
+
+# ───────────────────────── user settings ─────────────────────────
+# Mode (novato/experto) + goal + style + sessions + telegram + onboarding.
+# Estos endpoints son la PUERTA del usuario para configurar el bot sin
+# tocar archivos .env ni código. El frontend los consume desde el wizard
+# de onboarding y desde la sección "Configuración".
+
+@api_router.get("/settings")
+async def get_settings():
+    """Snapshot de settings + presets disponibles para el dashboard."""
+    if not _SHARED_AVAILABLE or _user_settings_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    snap = _user_settings_mod.snapshot()
+    snap["ok"] = True
+    return snap
+
+
+class UserSettingsPayload(BaseModel):
+    """Payload completo o parcial de user settings."""
+    model_config = ConfigDict(extra="allow")
+    mode: Optional[Literal["novato", "experto"]] = None
+    goal_usd: Optional[float] = Field(default=None, gt=0, le=10_000_000)
+    style: Optional[Literal["conservativo", "balanceado", "agresivo"]] = None
+    sessions: Optional[List[str]] = None
+    telegram_chat_ids: Optional[List[int]] = None
+    telegram_enabled: Optional[bool] = None
+
+
+@api_router.put("/settings", dependencies=[Depends(require_token)])
+async def put_settings(payload: UserSettingsPayload):
+    """Actualiza settings (merge parcial — solo los campos provistos)."""
+    if not _SHARED_AVAILABLE or _user_settings_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    current = _user_settings_mod.load()
+    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+    current.update(updates)
+    try:
+        saved = _user_settings_mod.save(current)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "settings": saved}
+
+
+@api_router.post("/settings/onboarding/complete",
+                  dependencies=[Depends(require_token)])
+async def post_onboarding_complete():
+    """Marca el wizard como completado."""
+    if not _SHARED_AVAILABLE or _user_settings_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    return {"ok": True, "settings": _user_settings_mod.mark_onboarded()}
+
+
+@api_router.get("/settings/styles")
+async def get_styles():
+    """Presets de estilo disponibles."""
+    if not _SHARED_AVAILABLE or _user_settings_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    return {"ok": True, "styles": _user_settings_mod.list_styles()}
+
+
+@api_router.get("/settings/sessions")
+async def get_sessions():
+    """Sesiones de mercado disponibles."""
+    if not _SHARED_AVAILABLE or _user_settings_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    return {"ok": True, "sessions": _user_settings_mod.list_sessions()}
+
+
+class TelegramChatPayload(BaseModel):
+    chat_id: int
+
+
+@api_router.post("/settings/telegram/add",
+                  dependencies=[Depends(require_token)])
+async def post_telegram_add(payload: TelegramChatPayload):
+    if not _SHARED_AVAILABLE or _user_settings_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    return {"ok": True,
+            "settings": _user_settings_mod.add_telegram_chat(payload.chat_id)}
+
+
+@api_router.post("/settings/telegram/remove",
+                  dependencies=[Depends(require_token)])
+async def post_telegram_remove(payload: TelegramChatPayload):
+    if not _SHARED_AVAILABLE or _user_settings_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    return {"ok": True,
+            "settings": _user_settings_mod.remove_telegram_chat(payload.chat_id)}
 
 
 @api_router.get("/plan/data")

@@ -52,8 +52,8 @@ import MetaTrader5 as mt5  # noqa: E402
 import server as trading                              # trading-mt5-mcp/server.py    # noqa: E402
 import halt as halt_mod                                # _shared/halt.py              # noqa: E402
 
-# New shared modules (capital ledger, expectancy, regime, correlation, kelly)
-from common import capital_ledger, expectancy_tracker, regime as regime_mod, correlation as corr_mod, sizing_kelly  # noqa: E402
+# New shared modules (capital ledger, expectancy, regime, correlation, kelly, user_settings)
+from common import capital_ledger, expectancy_tracker, regime as regime_mod, correlation as corr_mod, sizing_kelly, user_settings  # noqa: E402
 
 # Cross-MCP imports: load analysis-mcp/lib and risk-mcp/lib explicitly by
 # file path so we don't collide with trading-mt5-mcp's own ``lib`` package.
@@ -1287,6 +1287,33 @@ def main():
     except Exception as _exc_l:
         log.warning("capital_ledger init failed: %s", _exc_l)
 
+    # Cargar user_settings — el bot respeta el style preset, las sesiones y
+    # la meta del usuario. Si no hay user_settings (instalación nueva), se
+    # usan defaults razonables.
+    try:
+        _us = user_settings.load()
+        _style_p = user_settings.STYLE_PRESETS.get(
+            _us.get("style") or "balanceado",
+            user_settings.STYLE_PRESETS["balanceado"]
+        )
+        # Override args.risk_pct con el preset si el usuario eligió un style.
+        # Solo se sobrescribe si user_settings tiene un style explícito Y el
+        # CLI no pasó risk_pct distinto del default 1.0.
+        if _us.get("style") and abs(args.risk_pct - 1.0) < 0.001:
+            args.risk_pct = _style_p["risk_pct"]
+        log.info("user_settings: mode=%s style=%s sessions=%s goal=$%s telegram_chats=%s",
+                 _us.get("mode"), _us.get("style"),
+                 _us.get("sessions"), _us.get("goal_usd"),
+                 len(_us.get("telegram_chat_ids") or []))
+        # Telegram chat IDs override desde user_settings (si hay)
+        global TG_CHAT
+        _us_chats = _us.get("telegram_chat_ids") or []
+        if _us_chats and not TG_CHAT:
+            TG_CHAT = str(_us_chats[0])
+    except Exception as _exc_us:
+        log.warning("user_settings load failed: %s", _exc_us)
+        _us = None
+
     _tg_send(
         f"🤖 *Bot iniciado*\n"
         f"Cada {args.interval}s · Riesgo {args.risk_pct}% · Score mín {args.min_score}"
@@ -1419,6 +1446,26 @@ def main():
                 log.warning("balance %.2f — nothing to risk", balance)
                 _audit({"iter": iteration, "skip": "NO_BALANCE",
                         "balance": balance})
+                _sleep(args.interval)
+                continue
+
+            # 1.6 SESSION FILTER — el usuario configuró qué sesiones quiere
+            # operar (NY/Londres/Asia/24-7). Si la hora UTC actual no está
+            # en ninguna sesión activa, salteamos el scan. Las posiciones
+            # abiertas SIGUEN siendo manejadas (BE/trailing) por
+            # _manage_open_positions arriba — solo bloqueamos APERTURAS nuevas.
+            try:
+                _us_now = user_settings.load()
+            except Exception:
+                _us_now = None
+            _utc_h = datetime.now(timezone.utc).hour
+            if _us_now and not user_settings.is_session_active(_utc_h, _us_now):
+                if iteration % 10 == 0:  # log cada N para no spammear
+                    log.info("session inactive (h=%d UTC, active=%s) — skip new entries",
+                             _utc_h, _us_now.get("sessions"))
+                _audit({"iter": iteration, "skip": "SESSION_INACTIVE",
+                        "utc_hour": _utc_h,
+                        "active_sessions": _us_now.get("sessions")})
                 _sleep(args.interval)
                 continue
 
