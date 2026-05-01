@@ -217,6 +217,14 @@ body {
 .btn-sharp.danger:hover {
     background: rgba(239, 68, 68, 0.1);
 }
+.btn-sharp.success {
+    border-color: var(--green);
+    color: var(--green-bright);
+    background: rgba(16, 185, 129, 0.08);
+}
+.btn-sharp.success:hover {
+    background: rgba(16, 185, 129, 0.18);
+}
 
 /* Input */
 .input-sharp {

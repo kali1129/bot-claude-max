@@ -51,7 +51,7 @@ function clearDraft() {
 
 export default function Onboarding() {
     const navigate = useNavigate();
-    const { settings, updateSettings, completeOnboarding } = useSettings();
+    const { settings, updateSettings, completeOnboarding, refresh } = useSettings();
 
     const [draft, setDraft] = useState(loadDraft);
     const [warnAggressive, setWarnAggressive] = useState(false);
@@ -181,7 +181,7 @@ export default function Onboarding() {
                     {stepNum === 6 && (
                         <Step6
                             chats={settings?.telegram_chat_ids || []}
-                            refresh={() => {}}
+                            refresh={refresh}
                         />
                     )}
 

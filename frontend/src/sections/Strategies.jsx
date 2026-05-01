@@ -11,6 +11,7 @@
  */
 import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
+import { toast } from "sonner";
 import { Zap, TrendingUp, BarChart3, Target, Shield, ChevronRight } from "lucide-react";
 
 const TOKEN = process.env.REACT_APP_DASHBOARD_TOKEN || "";
@@ -296,7 +297,6 @@ export default function Strategies({ api, novato = false }) {
     const [loading, setLoading] = useState(true);
     const [activatingId, setActivatingId] = useState(null);
     const [error, setError] = useState(null);
-    const [toast, setToast] = useState(null);
 
     const fetchStrategies = useCallback(async () => {
         try {
@@ -322,16 +322,12 @@ export default function Strategies({ api, novato = false }) {
         setActivatingId(strategyId);
         try {
             await axios.post(`${api}/strategies/${strategyId}/activate`, {}, { headers: authHeaders });
-            setToast({ msg: `Estrategia "${strategyId}" activada`, type: "ok" });
+            toast.success(`Estrategia "${strategyId}" activada`);
             await fetchStrategies();
         } catch (e) {
-            setToast({
-                msg: e.response?.data?.detail || e.message || "Error activando estrategia",
-                type: "err",
-            });
+            toast.error(e.response?.data?.detail || e.message || "Error activando estrategia");
         } finally {
             setActivatingId(null);
-            setTimeout(() => setToast(null), 4000);
         }
     };
 
@@ -344,18 +340,7 @@ export default function Strategies({ api, novato = false }) {
                 Cambia la estrategia activa con un click — el bot usará la nueva estrategia en el próximo ciclo de escaneo.
             </p>
 
-            {/* Toast */}
-            {toast && (
-                <div
-                    className={`mb-4 px-4 py-2 rounded text-sm font-mono ${
-                        toast.type === "ok"
-                            ? "bg-[rgba(34,197,94,0.15)] text-[var(--green)] border border-[rgba(34,197,94,0.3)]"
-                            : "bg-[rgba(239,68,68,0.15)] text-[var(--red)] border border-[rgba(239,68,68,0.3)]"
-                    }`}
-                >
-                    {toast.msg}
-                </div>
-            )}
+            {/* Toast renderizado por sonner globalmente — ya no hay toast local */}
 
             {loading ? (
                 <div className="text-center py-12 text-[var(--text-faint)] font-mono text-sm">

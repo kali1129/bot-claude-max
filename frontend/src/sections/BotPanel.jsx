@@ -329,6 +329,14 @@ export default function BotPanel({ api, onMutated }) {
                 toast.success(
                     `Orden colocada · ${best.symbol} ${sideEs} · ticket ${result.ticket}`
                 );
+                // OPTIMISTIC UPDATE: incrementar open_count localmente para
+                // que el botón se deshabilite inmediatamente (evita doble-click
+                // race window de hasta 8s entre el OK y el siguiente refresh).
+                setBotStatus((prev) => ({
+                    ...(prev || {}),
+                    open_count: (prev?.open_count ?? 0) + 1,
+                    open_symbols: [...(prev?.open_symbols || []), best.symbol],
+                }));
                 onMutated?.();
                 refresh();
             } else {

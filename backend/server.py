@@ -1614,27 +1614,35 @@ class ProcessStartPayload(BaseModel):
 
 @api_router.get("/halt")
 async def halt_get():
-    return mt5_bridge.halt_status()
+    """Estado actual del kill-switch. Devuelve {ok, halted, halted_at, reason, path}."""
+    res = mt5_bridge.halt_status() or {}
+    return {"ok": True, **res}
 
 
 @api_router.post("/halt", dependencies=[Depends(require_token)])
 async def halt_post(payload: HaltPayload):
-    res = mt5_bridge.halt_set(payload.reason)
+    """Activa el kill-switch. Devuelve {ok, halted, halted_at, reason, path}.
+
+    Antes devolvía solo el dict crudo de mt5_bridge (sin `ok`). El frontend
+    asumía la presencia de `ok` para feedback visual; ahora normalizamos.
+    """
+    res = mt5_bridge.halt_set(payload.reason) or {}
     try:
         telegram_notifier.notify_halt(payload.reason)
     except Exception:  # noqa: BLE001 — never let TG error break the API
         pass
-    return res
+    return {"ok": True, **res}
 
 
 @api_router.delete("/halt", dependencies=[Depends(require_token)])
 async def halt_delete():
-    res = mt5_bridge.halt_clear()
+    """Desactiva el kill-switch. Devuelve {ok, halted: false, ...}."""
+    res = mt5_bridge.halt_clear() or {}
     try:
         telegram_notifier.notify_resume()
     except Exception:  # noqa: BLE001
         pass
-    return res
+    return {"ok": True, **res}
 
 
 @api_router.get("/mt5/status")

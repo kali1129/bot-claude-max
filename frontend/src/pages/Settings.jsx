@@ -2,7 +2,7 @@
 //
 // La de avanzado solo aparece si modo=experto (la spec lo pide).
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Save, Send, KeyRound, Cpu, Cog, Bell, Sliders } from "lucide-react";
 import { toast } from "sonner";
 
@@ -408,10 +408,19 @@ function MT5Tab() {
                 toast.success("Credenciales guardadas. Reiniciá el bot para aplicar.");
                 setForm({ ...form, password: "" });
                 setTestResult(null);
+                // Notificar a otros componentes (BotPanel, ConfigPanel) que el
+                // /bot/config se actualizó. Los listeners hacen refetch local.
+                window.dispatchEvent(new CustomEvent("botconfig:changed"));
             } else {
                 toast.error(`Error: ${r.data?.reason}`);
             }
         } catch (e) {
+            // En error mantenemos password (usuario puede reintentar) — pero
+            // si fue éxito de red con 4xx, también limpiamos por seguridad.
+            const status = e.response?.status;
+            if (status && status >= 400 && status < 500) {
+                setForm({ ...form, password: "" });
+            }
             toast.error(`Error: ${e.message}`);
         } finally {
             setSaving(false);
@@ -554,11 +563,14 @@ function AdvancedTab() {
     const [form, setForm] = useState(null);
     const [saving, setSaving] = useState(false);
 
-    useEffect(() => {
+    const fetchConfig = useCallback(() => {
         apiGet("/bot/config")
             .then((r) => {
                 setConfig(r.data);
-                setForm({
+                // Solo hidrata el form si todavía no fue editado o si fue
+                // recién guardado (form === null). Esto evita pisar input
+                // del usuario en re-fetches automáticos.
+                setForm((prev) => prev ?? {
                     TRADING_MODE: r.data?.TRADING_MODE || "demo",
                     MAX_LOTS_PER_TRADE: r.data?.MAX_LOTS_PER_TRADE ?? "0.5",
                     MT5_MAGIC: r.data?.MT5_MAGIC ?? "",
@@ -568,6 +580,17 @@ function AdvancedTab() {
             .catch((e) => console.error(e));
     }, []);
 
+    useEffect(() => {
+        fetchConfig();
+        // Listener: cuando otra parte de la app cambia /bot/config, re-hidratamos.
+        const onChanged = () => {
+            setForm(null);     // marca como "no dirty" → el siguiente fetchConfig hidrata
+            fetchConfig();
+        };
+        window.addEventListener("botconfig:changed", onChanged);
+        return () => window.removeEventListener("botconfig:changed", onChanged);
+    }, [fetchConfig]);
+
     const save = async () => {
         if (!form) return;
         setSaving(true);
@@ -575,6 +598,11 @@ function AdvancedTab() {
             const r = await apiPost("/bot/config", { updates: form });
             if (r.data?.ok) {
                 toast.success("Configuración guardada. Reiniciá el bot para aplicar.");
+                // Re-fetch propio para reflejar lo que el backend efectivamente guardó
+                // (puede haber normalización de paths, etc).
+                setForm(null);
+                fetchConfig();
+                window.dispatchEvent(new CustomEvent("botconfig:changed"));
             } else {
                 toast.error("No se pudo guardar");
             }

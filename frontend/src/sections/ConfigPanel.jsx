@@ -47,9 +47,14 @@ function BotConfigCard({ api, config, onSaved }) {
         SYNC_INTERVAL_SECONDS: "",
     });
     const [saving, setSaving] = useState(false);
+    // dirty: el usuario tocó al menos un campo desde la última hidratación.
+    // Sin esto, si el padre refetcha config (poll cada 8s) mientras el usuario
+    // está escribiendo, el form se borra. Con dirty=true, ignoramos updates
+    // remotos hasta que el usuario guarde o resetee.
+    const [dirty, setDirty] = useState(false);
 
     useEffect(() => {
-        if (config) {
+        if (config && !dirty) {
             setForm({
                 TRADING_MODE: config.TRADING_MODE || "demo",
                 MAX_LOTS_PER_TRADE: config.MAX_LOTS_PER_TRADE || "0.5",
@@ -58,7 +63,12 @@ function BotConfigCard({ api, config, onSaved }) {
                 SYNC_INTERVAL_SECONDS: config.SYNC_INTERVAL_SECONDS || "30",
             });
         }
-    }, [config]);
+    }, [config, dirty]);
+
+    const updateField = (k, v) => {
+        setDirty(true);
+        setForm((prev) => ({ ...prev, [k]: v }));
+    };
 
     const save = async () => {
         try {
@@ -68,6 +78,7 @@ function BotConfigCard({ api, config, onSaved }) {
                 { headers: authHeaders });
             if (r.data?.ok) {
                 toast.success("Configuración guardada. Reinicia el bot para aplicar.");
+                setDirty(false);   // permitir que el padre re-hidrate con valores guardados
                 onSaved?.();
             } else {
                 toast.error(`Error: ${r.data?.reason}`);
@@ -86,7 +97,7 @@ function BotConfigCard({ api, config, onSaved }) {
                     <select
                         className="input-sharp"
                         value={form.TRADING_MODE}
-                        onChange={(e) => setForm({ ...form, TRADING_MODE: e.target.value })}
+                        onChange={(e) => updateField("TRADING_MODE", e.target.value)}
                     >
                         <option value="demo">demo (MT5 demo real)</option>
                         <option value="paper">paper (sólo simulado, para tests)</option>
@@ -96,22 +107,22 @@ function BotConfigCard({ api, config, onSaved }) {
                 <Field label="Lotaje máximo por trade" hint="cap absoluto, default 0.5">
                     <input className="input-sharp" type="number" step="0.01"
                         value={form.MAX_LOTS_PER_TRADE}
-                        onChange={(e) => setForm({ ...form, MAX_LOTS_PER_TRADE: e.target.value })} />
+                        onChange={(e) => updateField("MAX_LOTS_PER_TRADE", e.target.value)} />
                 </Field>
                 <Field label="Magic ID" hint="identifica trades del bot en MT5">
                     <input className="input-sharp" type="number"
                         value={form.MT5_MAGIC}
-                        onChange={(e) => setForm({ ...form, MT5_MAGIC: e.target.value })} />
+                        onChange={(e) => updateField("MT5_MAGIC", e.target.value)} />
                 </Field>
                 <Field label="URL del backend" hint="dónde el bot postea deals">
                     <input className="input-sharp"
                         value={form.DASHBOARD_URL}
-                        onChange={(e) => setForm({ ...form, DASHBOARD_URL: e.target.value })} />
+                        onChange={(e) => updateField("DASHBOARD_URL", e.target.value)} />
                 </Field>
                 <Field label="Intervalo del sync (s)" hint="cada cuánto el sync_loop revisa">
                     <input className="input-sharp" type="number" min="10" max="600"
                         value={form.SYNC_INTERVAL_SECONDS}
-                        onChange={(e) => setForm({ ...form, SYNC_INTERVAL_SECONDS: e.target.value })} />
+                        onChange={(e) => updateField("SYNC_INTERVAL_SECONDS", e.target.value)} />
                 </Field>
             </div>
             <button onClick={save} disabled={saving}
@@ -285,8 +296,12 @@ function ProcessesCard({ api, onChange }) {
     }, [load]);
 
     const action = async (name, op) => {
+        // CRITICAL: usar callback form para evitar stale closure cuando dos
+        // procesos se accionan rápido. Antes: setBusy({ ...busy, [name]: op })
+        // capturaba el `busy` viejo y un click rápido en el segundo proceso
+        // pisaba el flag del primero, deshabilitando incorrectamente sus botones.
         try {
-            setBusy({ ...busy, [name]: op });
+            setBusy((prev) => ({ ...prev, [name]: op }));
             const r = await axios.post(
                 `${api}/process/${name}/${op}`,
                 {},
@@ -302,7 +317,7 @@ function ProcessesCard({ api, onChange }) {
         } catch (e) {
             toast.error(`Error: ${e.message}`);
         } finally {
-            setBusy({ ...busy, [name]: null });
+            setBusy((prev) => ({ ...prev, [name]: null }));
         }
     };
 
