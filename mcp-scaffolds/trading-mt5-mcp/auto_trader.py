@@ -52,6 +52,9 @@ import MetaTrader5 as mt5  # noqa: E402
 import server as trading                              # trading-mt5-mcp/server.py    # noqa: E402
 import halt as halt_mod                                # _shared/halt.py              # noqa: E402
 
+# New shared modules (capital ledger, expectancy, regime, correlation, kelly)
+from common import capital_ledger, expectancy_tracker, regime as regime_mod, correlation as corr_mod, sizing_kelly  # noqa: E402
+
 # Cross-MCP imports: load analysis-mcp/lib and risk-mcp/lib explicitly by
 # file path so we don't collide with trading-mt5-mcp's own ``lib`` package.
 import importlib.util  # noqa: E402
@@ -137,7 +140,10 @@ WATCHLIST_DEFAULT = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
 ]
 
-ALWAYS_TRADEABLE = {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT"}
+# Symbols that ignore session/blackout rules (single source of truth — antes
+# estaba duplicado en 3 lugares con valores ligeramente distintos).
+ALWAYS_TRADEABLE = {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT", "BTCEUR"}
+ALWAYS_TRADEABLE_24H = ALWAYS_TRADEABLE  # alias para compat
 
 NL = chr(10)  # newline for use inside f-strings
 
@@ -146,10 +152,36 @@ sys.path.insert(0, str(HERE))  # ensure strategies/ is importable
 import strategies as strat_engine
 
 # Global hard filters
-MAX_SPREAD_PCT_OF_R = 35.0        # reject if spread > 35% of SL distance
+MAX_SPREAD_PCT_OF_R = float(os.environ.get("MAX_SPREAD_PCT_OF_R", "35.0"))
 FOREX_SESSION_START_UTC = 7       # forex: only trade 07:00-20:00 UTC
 FOREX_SESSION_END_UTC = 20
-ALWAYS_TRADEABLE_24H = {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT"}
+
+# Anti-repaint: exigir que la barra M15 esté cerrada (con tolerancia)
+# antes de evaluar setups. Evita que escaneos cada 15s evalúen 60 veces
+# la misma barra incompleta y disparen signals que se reorganizan después.
+# Default: requerir 14 min mínimos transcurridos en la barra M15 actual
+# (último candle "casi cerrado") + dedup por (strategy, symbol, bar_open_time).
+ANTI_REPAINT_MIN_BAR_AGE_SEC = int(os.environ.get(
+    "ANTI_REPAINT_MIN_BAR_AGE_SEC", "0"))   # 0 = desactivado por defecto (compat con stress test)
+
+# Cooldown post-rejection por símbolo. Cuando place_order rechaza por motivos
+# persistentes (LOW_PROFIT_PAIR, RISK_EXCEEDED, etc.), no re-intentar el
+# mismo símbolo hasta que pase este cooldown.
+SYMBOL_COOLDOWN_AFTER_REJECT_MIN = int(os.environ.get(
+    "SYMBOL_COOLDOWN_AFTER_REJECT_MIN", "30"))
+# Motivos que activan cooldown (otros se reintentan inmediato)
+COOLDOWN_REASONS = {
+    "LOW_PROFIT_PAIR", "RISK_EXCEEDED", "EQUITY_DRAWDOWN",
+    "DAILY_LOSS_LIMIT", "LOSS_COOLDOWN", "MAX_TRADES_PER_DAY",
+    "CORRELATED_PAIR", "CORRELATED_CONCENTRATION", "REGIME_INCOMPATIBLE",
+    "NEGATIVE_EXPECTANCY",
+}
+
+# Cooldown state in-memory (dict symbol → unix ts hasta cuándo skipear)
+_SYMBOL_COOLDOWN_UNTIL: dict = {}
+
+# Anti-repaint dedup: { (strategy_id, symbol, bar_open_time_iso) → ts }
+_LAST_PROPOSED: dict = {}
 
 
 
@@ -162,11 +194,47 @@ def _on_signal(signum, _frame):
     _running = False
 
 
+def _rotate_if_needed(path: Path, max_mb: float = 50.0) -> None:
+    """Rotación simple: si el archivo > max_mb, lo rota a .1.gz (sin gzip por
+    simplicidad — solo rename con timestamp). Mantiene últimos 5 archivos.
+
+    Llamado de forma "best effort" — failures no rompen el bot.
+    """
+    try:
+        if not path.exists():
+            return
+        size_mb = path.stat().st_size / (1024 * 1024)
+        if size_mb < max_mb:
+            return
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        rotated = path.with_suffix(path.suffix + f".{ts}")
+        path.rename(rotated)
+        # Mantener solo últimos 5 rotados
+        rotated_files = sorted(path.parent.glob(f"{path.name}.*"))
+        for old in rotated_files[:-5]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_AUDIT_LINES_SINCE_ROTATE = 0
+_RESEARCH_LINES_SINCE_ROTATE = 0
+
+
 def _audit(payload: dict) -> None:
+    global _AUDIT_LINES_SINCE_ROTATE
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     payload = {"ts": datetime.now(timezone.utc).isoformat(), **payload}
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, default=str) + "\n")
+    # Check size cada ~500 líneas (no en cada write — overhead)
+    _AUDIT_LINES_SINCE_ROTATE += 1
+    if _AUDIT_LINES_SINCE_ROTATE >= 500:
+        _rotate_if_needed(LOG_FILE, max_mb=50.0)
+        _AUDIT_LINES_SINCE_ROTATE = 0
 
 
 # ============================================================================
@@ -175,6 +243,7 @@ def _audit(payload: dict) -> None:
 
 def _research_write(event_type: str, payload: dict) -> None:
     """Append one structured event to the research log. Never raises."""
+    global _RESEARCH_LINES_SINCE_ROTATE
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         record = {
@@ -184,6 +253,10 @@ def _research_write(event_type: str, payload: dict) -> None:
         }
         with open(RESEARCH_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
+        _RESEARCH_LINES_SINCE_ROTATE += 1
+        if _RESEARCH_LINES_SINCE_ROTATE >= 500:
+            _rotate_if_needed(RESEARCH_LOG, max_mb=20.0)
+            _RESEARCH_LINES_SINCE_ROTATE = 0
     except OSError as exc:
         log.warning("research_log write failed: %s", exc)
 
@@ -261,7 +334,16 @@ def _research_open(*, ticket: int, setup: dict, lots: float, risk_dollars: float
         ],
     }
     _research_write("open", payload)
-    # Seed the state for MAE/MFE tracking
+    # Seed the state for MAE/MFE tracking. CRITICAL: persistir sl_atr_mult
+    # y atr_at_entry para que _manage_open_positions calcule R correctamente
+    # según la estrategia que lo abrió, no un hardcoded 1.5.
+    sid = setup.get("strategy_id", "")
+    sl_atr_mult = 1.5
+    try:
+        if sid and sid in strat_engine.REGISTRY:
+            sl_atr_mult = float(strat_engine.REGISTRY[sid].sl_atr_mult)
+    except Exception:  # noqa: BLE001
+        pass
     state = _research_load_state()
     state[str(int(ticket))] = {
         "symbol": setup["symbol"],
@@ -276,6 +358,12 @@ def _research_open(*, ticket: int, setup: dict, lots: float, risk_dollars: float
         "max_adverse_at": datetime.now(timezone.utc).isoformat(),
         "be_moved": False,
         "trail_count": 0,
+        # Persistir contexto de la estrategia para que el manage haga R-progress
+        # correcto. Sin esto el trailing usa SL_MULT hardcoded 1.5 y rompe el
+        # RR prometido en breakout_hunter (2.0) y mean_reverter (2.0).
+        "strategy_id": sid,
+        "sl_atr_mult": sl_atr_mult,
+        "atr_at_entry": float(setup.get("atr") or 0.0),
     }
     _research_save_state(state)
 
@@ -398,7 +486,26 @@ def _research_close(*, ticket: int, exit_price: float, pnl_usd: float,
         "trail_count": int(s.get("trail_count", 0)),
         "original_sl": s.get("original_sl"),
         "original_tp": s.get("original_tp"),
+        "strategy_id": s.get("strategy_id"),
     })
+
+    # Registrar en el expectancy_tracker. Esto alimenta la decisión "edge
+    # PROVEN | UNCERTAIN | NEGATIVE" que usa _propose_setup en próximos scans.
+    try:
+        sid = s.get("strategy_id") or "unknown"
+        if s.get("symbol"):
+            expectancy_tracker.register_close(
+                strategy_id=sid,
+                symbol=s.get("symbol"),
+                r_multiple=float(r_multiple),
+                pnl_usd=float(pnl_usd),
+                utc_hour=datetime.now(timezone.utc).hour,
+                extra={"exit_reason": exit_reason,
+                        "be_moved": bool(s.get("be_moved")),
+                        "duration_s": duration_s},
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("expectancy register failed for ticket %s: %s", ticket, exc)
 
 
 # --------------------------- paper trade tracker ---------------------------
@@ -762,6 +869,14 @@ def _manage_open_positions(iteration: int) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("close detection failed: %s", exc)
 
+    # Cargar state una sola vez para todos los tickets del loop. Si el load
+    # falla, usamos {} y los lookups por ticket retornarán None — el código
+    # tiene fallbacks (ATR actual × 1.5).
+    try:
+        state = _research_load_state()
+    except Exception:  # noqa: BLE001
+        state = {}
+
     for p in positions:
         try:
             sym = p.symbol
@@ -781,13 +896,35 @@ def _manage_open_positions(iteration: int) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-            # Initial SL distance: |entry - initial sl|. The bot opens with
-            # SL = 1.0×ATR distance, so we can re-derive 1R by reading the
-            # position's CURRENT sl ONLY if it hasn't been moved yet. After
-            # the first move, current_sl is at entry (or beyond) so it would
-            # under-state 1R. We need a stable anchor: parse it from the
-            # comment which we'd need to set, OR re-compute from M15 ATR
-            # NOW (close enough — ATR doesn't drift much in minutes).
+            # Initial SL distance — anchor para R-progress. Preferimos lo que
+            # se persistió en position_state.json al abrir (atr_at_entry +
+            # sl_atr_mult según la estrategia). Si no existe (posiciones
+            # legacy abiertas antes de este fix), reconstruimos desde:
+            #   1) la distancia entry→original_sl si está en state
+            #   2) ATR actual × SL multiplier de la estrategia activa
+            #   3) ATR actual × 1.5 (fallback)
+            ticket_state = state.get(str(int(p.ticket)), {}) if isinstance(state, dict) else {}
+            atr_at_entry = float(ticket_state.get("atr_at_entry") or 0.0)
+            sl_mult_from_state = float(ticket_state.get("sl_atr_mult") or 0.0)
+            initial_sl_distance = 0.0
+            orig_sl_state = float(ticket_state.get("original_sl") or 0.0)
+            if orig_sl_state > 0:
+                # Mejor: usar la distancia exacta al SL original
+                initial_sl_distance = abs(entry - orig_sl_state)
+            elif atr_at_entry > 0 and sl_mult_from_state > 0:
+                initial_sl_distance = atr_at_entry * sl_mult_from_state
+            if initial_sl_distance <= 0:
+                # Fallback final: ATR actual × 1.5 (compat con código viejo)
+                m15 = trading.get_rates(sym, "M15", 50)
+                bars = m15.get("bars") if isinstance(m15, dict) else None
+                if not bars:
+                    continue
+                atr_now = _atr_distance(bars)
+                if atr_now <= 0:
+                    continue
+                initial_sl_distance = atr_now * 1.5
+
+            # Para el TRAILING (paso 2) sí necesitamos ATR actual (no del entry)
             m15 = trading.get_rates(sym, "M15", 50)
             bars = m15.get("bars") if isinstance(m15, dict) else None
             if not bars:
@@ -796,9 +933,7 @@ def _manage_open_positions(iteration: int) -> None:
             if atr <= 0:
                 continue
 
-            # Use the active strategy's SL multiplier for correct R calculation
-            _sl_mult = 1.5  # common SL multiplier across strategies
-            r = _r_progress(side, entry, _sl_mult * atr, current_price)
+            r = _r_progress(side, entry, initial_sl_distance, current_price)
             sl_at_or_past_entry = (
                 (side == "buy" and current_sl >= entry > 0) or
                 (side == "sell" and 0 < current_sl <= entry)
@@ -842,16 +977,21 @@ def _manage_open_positions(iteration: int) -> None:
                     # SILENCED: SL breakeven telegram
                 continue
 
-            # === Phase 2: ATR trailing ===
+            # === Phase 2: ATR trailing — usa el multiplier de la estrategia ===
+            # Antes hardcoded 1.0 × ATR para todos. Ahora usamos el sl_atr_mult
+            # de la estrategia que abrió el trade (1.5 trend_rider, 2.0
+            # breakout_hunter, etc.). El trail debe respetar la "amplitud"
+            # original del SL para no estrangular el setup.
+            trail_mult = sl_mult_from_state if sl_mult_from_state > 0 else 1.0
             info = mt5.symbol_info(sym)
             digits = info.digits if info else 5
             if side == "buy":
-                proposed = round(current_price - 1.0 * atr, digits)
+                proposed = round(current_price - trail_mult * atr, digits)
                 # Only move SL UP for buy
                 if proposed <= current_sl:
                     continue
             else:
-                proposed = round(current_price + 1.0 * atr, digits)
+                proposed = round(current_price + trail_mult * atr, digits)
                 # Only move SL DOWN for sell
                 if proposed >= current_sl:
                     continue
@@ -896,14 +1036,77 @@ def _atr_distance(bars, default=0.0010) -> float:
     return float(last) if last > 0 else default
 
 
-def _propose_setup(bars_m15, bars_h4, bars_d1, tick) -> list:
-    """Multi-strategy: all eligible strategies propose signals."""
+def _bar_is_closed_enough(bars_m15: list, min_age_sec: int) -> bool:
+    """Anti-repaint: la última barra M15 debe tener al menos ``min_age_sec``
+    segundos de antigüedad. Una barra "casi cerrada" (>=14min en M15) es
+    estable. Una barra fresca (0-30s) cambia con cada tick.
+
+    Si min_age_sec == 0, la check está desactivada.
+    """
+    if min_age_sec <= 0 or not bars_m15:
+        return True
+    try:
+        last_bar = bars_m15[-1]
+        bar_time_iso = last_bar.get("time")
+        if not bar_time_iso:
+            return True
+        bar_dt = datetime.fromisoformat(str(bar_time_iso).replace("Z", "+00:00"))
+        age_sec = (datetime.now(timezone.utc) - bar_dt).total_seconds()
+        return age_sec >= min_age_sec
+    except (ValueError, TypeError, KeyError):
+        return True  # data inválida → no bloquear (better than crash)
+
+
+def _dedup_key(strategy_id: str, symbol: str, bars_m15: list) -> str | None:
+    """Clave de dedup para anti-repaint: no re-emitir la misma propuesta
+    sobre la misma barra."""
+    if not bars_m15:
+        return None
+    try:
+        return f"{strategy_id}:{symbol}:{bars_m15[-1].get('time', '?')}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _propose_setup(bars_m15, bars_h4, bars_d1, tick,
+                    current_regime: str | None = None) -> list:
+    """Multi-strategy: all eligible strategies propose signals.
+
+    Filtros nuevos:
+      - Anti-repaint: si la barra M15 está fresca (< ANTI_REPAINT_MIN_BAR_AGE_SEC),
+        descarta toda propuesta para evitar disparar sobre una barra incompleta.
+      - Regime gate: si ``current_regime`` está informado, filtra estrategias
+        cuyos valid_regimes no lo incluyen (mean_reverter en TREND, etc.).
+      - Dedup: mismo (strategy_id, symbol, bar_open_time) → no propone otra vez.
+      - Expectancy gate: si la combo (strategy:symbol) tiene verdict NEGATIVE
+        con n suficiente, descarta el setup (no perder más en lo que ya pierde).
+    """
     if not tick:
         return []
     sym = getattr(_propose_setup, '_current_symbol', 'UNKNOWN')
+
+    # Anti-repaint: barra cerrada o configurable a 0 (desactivado)
+    if not _bar_is_closed_enough(bars_m15, ANTI_REPAINT_MIN_BAR_AGE_SEC):
+        return []
+
     eligible = strat_engine.get_eligible_strategies()
     proposals = []
     for strategy in eligible:
+        sid = strategy.id
+        # Regime gate
+        if current_regime and not regime_mod.is_strategy_compatible(sid, current_regime):
+            continue
+        # Dedup por barra
+        key = _dedup_key(sid, sym, bars_m15)
+        if key and key in _LAST_PROPOSED:
+            continue
+        # Expectancy gate: NEGATIVE con n>=15 → no abrir nuevos trades
+        edge = expectancy_tracker.edge_status(sid, sym)
+        if edge.get("verdict") == "NEGATIVE":
+            # No spam de logs; solo registramos una vez por barra
+            if key:
+                _LAST_PROPOSED[key] = time.time()
+            continue
         try:
             signals = strategy.propose(sym, tick, bars_m15, bars_h4, bars_d1)
             for s in signals:
@@ -913,10 +1116,49 @@ def _propose_setup(bars_m15, bars_h4, bars_d1, tick) -> list:
                     "rec": s.rec, "breakdown": s.breakdown,
                     "strategy_id": s.strategy_id,
                     "extra": s.extra,
+                    "edge": edge,                # info para audit / sizing
+                    "regime": current_regime,
                 })
+            # Marca el dedup tras procesar (independientemente de si emitió)
+            if key:
+                _LAST_PROPOSED[key] = time.time()
         except Exception as exc:
             log.warning("strategy %s failed for %s: %s", strategy.id, sym, exc)
     return proposals
+
+
+def _purge_dedup_cache(max_entries: int = 5000) -> None:
+    """Limpia entries viejos del dedup cache (>2h) para que no crezca infinito."""
+    if len(_LAST_PROPOSED) < max_entries:
+        return
+    cutoff = time.time() - 2 * 3600
+    stale = [k for k, ts in _LAST_PROPOSED.items() if ts < cutoff]
+    for k in stale:
+        del _LAST_PROPOSED[k]
+
+
+def _detect_regime_for(symbol: str) -> dict:
+    """Pulls H4+D1 bars y corre regime detector. Retorna {regime, details}.
+    Cacheado de forma simple por símbolo (1 vez cada N min)."""
+    cache = getattr(_detect_regime_for, "_cache", {})
+    last = cache.get(symbol)
+    now = time.time()
+    if last and now - last["ts"] < 600:   # cache 10 min
+        return last["data"]
+    try:
+        d1 = trading.get_rates(symbol, "D1", 250)
+        h4 = trading.get_rates(symbol, "H4", 250)
+        bars_d1 = d1.get("bars") if isinstance(d1, dict) else None
+        bars_h4 = h4.get("bars") if isinstance(h4, dict) else None
+        tick = trading.get_tick(symbol)
+        cur_price = float(tick.get("bid", 0) or 0) if isinstance(tick, dict) else 0
+        result = regime_mod.detect(bars_d1 or [], bars_h4 or [], cur_price)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("regime detect failed for %s: %s", symbol, exc)
+        result = {"regime": "UNKNOWN", "details": {"error": str(exc)}}
+    cache[symbol] = {"ts": now, "data": result}
+    _detect_regime_for._cache = cache
+    return result
 
 def _save_last_scan(best, candidates) -> None:
     payload = {
@@ -933,11 +1175,23 @@ def _save_last_scan(best, candidates) -> None:
         pass
 
 
-def _scan(watchlist) -> dict | None:
-    """Returns the best (highest scoring) setup across the watchlist."""
+def _scan(watchlist) -> tuple:
+    """Returns (best, iteration_log).
+
+    Filtros aplicados antes de evaluar estrategia:
+      - cooldown post-rejection del símbolo (skip)
+      - regime detector (pasado a _propose_setup para gate por estrategia)
+    """
     best = None
     iteration_log = []
+    now = time.time()
     for sym in watchlist:
+        # Skip si está en cooldown post-rejection
+        cool_until = _SYMBOL_COOLDOWN_UNTIL.get(sym, 0)
+        if cool_until > now:
+            iteration_log.append({"symbol": sym, "status": "cooldown",
+                                  "remaining_min": int((cool_until - now) / 60)})
+            continue
         try:
             tick_resp = trading.get_tick(sym)
             if tick_resp.get("ok") is False:
@@ -952,8 +1206,17 @@ def _scan(watchlist) -> dict | None:
             d1 = trading.get_rates(sym, "D1", 100)
             d1_bars = d1.get("bars") if "bars" in d1 else None
 
+            # Régimen del símbolo (cacheado 10 min)
+            regime_info = _detect_regime_for(sym)
+            current_regime = regime_info.get("regime")
+
             _propose_setup._current_symbol = sym  # pass symbol context
-            proposals = _propose_setup(m15["bars"], h4_bars, d1_bars, tick_resp)
+            proposals = _propose_setup(m15["bars"], h4_bars, d1_bars, tick_resp,
+                                        current_regime=current_regime)
+            if not proposals:
+                iteration_log.append({"symbol": sym, "status": "no-proposals",
+                                      "regime": current_regime})
+                continue
             for p in proposals:
                 iteration_log.append({"symbol": sym, **p})
                 if best is None or p["score"] > best["score"]:
@@ -962,6 +1225,7 @@ def _scan(watchlist) -> dict | None:
             log.exception("scan failed for %s", sym)
             iteration_log.append({"symbol": sym, "error": str(exc)})
     _save_last_scan(best, iteration_log)
+    _purge_dedup_cache()
     return best, iteration_log
 
 
@@ -1005,6 +1269,24 @@ def main():
     _active_name = strat_engine.get_active_strategy().name
     log.info("auto-trader starting — interval=%ss risk=%.1f%% min_score=%d watchlist=%s",
              args.interval, args.risk_pct, args.min_score, watchlist)
+
+    # Inicializar capital_ledger con el balance real de MT5 (si está conectado).
+    # Esto reemplaza el patrón anterior de "balance hardcodeado $800":
+    # ahora tenemos starting_balance separado del target y peak tracking real.
+    try:
+        _h0 = trading.health()
+        if _h0.get("connected") and _h0.get("account"):
+            _bal0 = float(_h0["account"].get("balance") or 0)
+            if _bal0 > 0:
+                _ld = capital_ledger.init_if_empty(_bal0)
+                log.info("capital_ledger: target=$%.2f starting=$%.2f current=$%.2f peak=$%.2f",
+                         _ld.get("target_capital_usd") or 0,
+                         _ld.get("starting_balance_usd") or 0,
+                         _ld.get("current_balance_usd") or 0,
+                         _ld.get("peak_equity_usd") or 0)
+    except Exception as _exc_l:
+        log.warning("capital_ledger init failed: %s", _exc_l)
+
     _tg_send(
         f"🤖 *Bot iniciado*\n"
         f"Cada {args.interval}s · Riesgo {args.risk_pct}% · Score mín {args.min_score}"
@@ -1102,6 +1384,21 @@ def main():
             acc = trading.get_account_info()
             mt5_positions = trading.get_open_positions().get("positions", [])
             balance = acc.get("balance", 0.0)
+            equity = acc.get("equity", balance) or balance
+
+            # Capital ledger: actualiza balance/peak + detecta drift sospechoso
+            try:
+                _drift = capital_ledger.is_drift_suspicious(balance)
+                if _drift:
+                    log.warning("capital drift detected: %s", _drift["hint"])
+                    _audit({"iter": iteration, "event": "capital_drift", **_drift})
+                    _tg_send(
+                        f"⚠️ *Cambio de balance no esperado*\n"
+                        f"{_drift['hint']}"
+                    )
+                capital_ledger.update_balance(balance, equity)
+            except Exception as _exc_cl:
+                log.debug("capital_ledger update failed: %s", _exc_cl)
 
             # Multi-symbol: hasta MAX_OPEN_POSITIONS posiciones, máximo 1 por símbolo.
             from rules import MAX_OPEN_POSITIONS  # noqa: WPS433  late import
@@ -1195,30 +1492,138 @@ def main():
                             # DISABLED: "symbol": best["symbol"], "reason": _hf_reason})
                     # DISABLED: _sleep(args.interval)
                     # DISABLED: continue
- # DISABLED:             # 3. size
+            # 2.5 CORRELATION FILTER — bloquea concentración silenciosa
+            # Hoy el bot abre 5 trades USDxxx pensando que está diversificado;
+            # son una sola apuesta direccional con 5x leverage.
+            _all_open = list(mt5_positions) + [
+                {"symbol": p["symbol"], "side": p["side"]} for p in paper_trades
+            ]
+            _conc = corr_mod.would_concentrate(
+                new_symbol=best["symbol"], new_side=best["side"],
+                open_positions=_all_open,
+                threshold=float(os.environ.get("CORR_THRESHOLD", "0.65")),
+            )
+            if _conc:
+                log.info("correlation filter blocked %s: %s",
+                         best["symbol"], _conc.get("detail") or _conc.get("reason"))
+                _audit({"iter": iteration, "skip": "CORRELATED_CONCENTRATION",
+                        "symbol": best["symbol"], **_conc})
+                # Cooldown corto: el setup volverá a ser válido si las
+                # posiciones correlacionadas se cierran.
+                _SYMBOL_COOLDOWN_UNTIL[best["symbol"]] = time.time() + 10 * 60
+                _sleep(args.interval)
+                continue
+
+            # 3. size — KELLY FRACTION ESCALADO POR SCORE Y EXPECTANCY
             sym_info = _symbol_size_inputs(best["symbol"])
             if sym_info is None:
                 log.warning("no symbol info for %s — skip", best["symbol"])
                 _sleep(args.interval)
                 continue
 
+            # Kelly multiplier: si la combo (strategy:symbol) tiene historia
+            # con expectancy probada, escala risk_pct hacia arriba (hasta 1.5x).
+            # Si tiene expectancy negativa, retorna risk_pct = 0 (no tradear).
+            try:
+                from rules import MAX_RISK_PER_TRADE_PCT as _MAX_R
+            except ImportError:
+                _MAX_R = 5.0
+            _edge_stats = best.get("edge", {}) or {}
+            _exp_combo = expectancy_tracker.list_combos(min_n=0)
+            _combo_key = f"{best.get('strategy_id','?')}:{best['symbol']}"
+            _stats = _exp_combo.get(_combo_key) or {}
+            _kelly = sizing_kelly.compute(
+                base_risk_pct=float(args.risk_pct),
+                score=int(best.get("score", 0)),
+                expectancy_stats=_stats,
+                max_risk_pct=float(_MAX_R),
+            )
+            _eff_risk_pct = _kelly["risk_pct"]
+            if _eff_risk_pct <= 0.0:
+                log.info("kelly = 0 for %s (%s) — skip",
+                         best["symbol"], _kelly["components"].get("reason"))
+                _audit({"iter": iteration, "skip": "KELLY_ZERO",
+                        "symbol": best["symbol"], "kelly": _kelly})
+                _SYMBOL_COOLDOWN_UNTIL[best["symbol"]] = time.time() + \
+                    SYMBOL_COOLDOWN_AFTER_REJECT_MIN * 60
+                _sleep(args.interval)
+                continue
+
+            # max_lot dinámico: cap absoluto + cap por NOCIONAL.
+            # Antes era 0.5 lots fijo — pero 0.5 lots BTCUSD a $77k = $38k
+            # exposure en cuenta de $200 = 190x leverage = una vela ATR mata
+            # la cuenta. El nocional cap evita esto.
+            #
+            # Per-class defaults (env override para tunear):
+            #   - FX: hasta 1000% notional (10x lev — usual para 0.01 lots
+            #     en cuenta de $200)
+            #   - Crypto: 200% notional (2x lev, BTC/ETH ya volátiles)
+            #   - Otros: 500% notional default
+            _sym_upper = best["symbol"].upper()
+            if _sym_upper in {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT", "BTCEUR"}:
+                _default_notional_pct = 200.0
+                _env_key = "MAX_NOTIONAL_PCT_CRYPTO"
+            elif _sym_upper.endswith(("USD", "JPY", "GBP", "EUR", "CHF", "AUD",
+                                       "NZD", "CAD")) and len(_sym_upper) == 6:
+                _default_notional_pct = 1000.0
+                _env_key = "MAX_NOTIONAL_PCT_FX"
+            else:
+                _default_notional_pct = 500.0
+                _env_key = "MAX_NOTIONAL_PCT"
+            _max_notional_pct = float(os.environ.get(_env_key,
+                                                      str(_default_notional_pct)))
+            _contract = sizing_kelly.contract_size_for(best["symbol"])
+            _notional_lots = sizing_kelly.notional_max_lots(
+                balance=balance,
+                current_price=best["entry"],
+                contract_size=_contract,
+                max_notional_pct=_max_notional_pct,
+            )
+            _abs_cap = float(os.environ.get("MAX_LOTS_PER_TRADE", "0.5"))
+            _eff_max_lot_raw = min(_abs_cap, sym_info["volume_max"], _notional_lots)
+            # CRÍTICO: snappear al volume_step del broker antes de pasarlo
+            # como max_lot. Sin esto, `risk_sizing.calc_position_size` puede
+            # devolver lots como 0.0147 que MT5 rechaza con retcode=10014
+            # ("Invalid volume").
+            import math as _math
+            _step = sym_info["volume_step"] or 0.01
+            _eff_max_lot = _math.floor(_eff_max_lot_raw / _step) * _step
+            _eff_max_lot = round(_eff_max_lot, 4)
+            # Si el cap nocional pone el max_lot por debajo del mínimo del
+            # broker, la cuenta es muy chica para tradear este símbolo —
+            # NO override forzado al min, mejor saltar (preserva el sentido
+            # del cap nocional).
+            if _eff_max_lot < sym_info["volume_min"]:
+                log.info("notional cap < min_lot for %s (max=%.4f min=%.4f) — skip",
+                         best["symbol"], _eff_max_lot, sym_info["volume_min"])
+                _audit({"iter": iteration, "skip": "NOTIONAL_TOO_SMALL",
+                        "symbol": best["symbol"],
+                        "max_lot_calculated": _eff_max_lot,
+                        "min_lot_broker": sym_info["volume_min"],
+                        "max_notional_pct_used": _max_notional_pct})
+                _SYMBOL_COOLDOWN_UNTIL[best["symbol"]] = time.time() + 30 * 60
+                _sleep(args.interval)
+                continue
+
             size = risk_sizing.calc_position_size(
                 balance=balance,
-                risk_pct=args.risk_pct,
+                risk_pct=_eff_risk_pct,
                 entry=best["entry"], sl=best["sl"],
                 tick_value=sym_info["tick_value"],
                 tick_size=sym_info["tick_size"],
                 lot_step=sym_info["volume_step"],
                 min_lot=sym_info["volume_min"],
-                max_lot=min(sym_info["volume_max"], 0.5),
+                max_lot=_eff_max_lot,
             )
-            log.info("setup %s %s score=%d lots=%s risk=%s",
+            log.info("setup %s %s score=%d kelly_pct=%.3f%% lots=%s risk=$%s edge=%s",
                      best["symbol"], best["side"], best["score"],
-                     size.get("lots"), size.get("risk_dollars"))
+                     _eff_risk_pct, size.get("lots"), size.get("risk_dollars"),
+                     (_edge_stats or {}).get("verdict") or "?")
 
             if size.get("lots", 0) <= 0:
                 _audit({"iter": iteration, "skip": "SIZE_ZERO",
-                        "best": best, "size": size})
+                        "best": best, "size": size, "kelly": _kelly,
+                        "max_lot_used": _eff_max_lot})
                 _sleep(args.interval)
                 continue
 
@@ -1233,7 +1638,23 @@ def main():
             )
             log.info("place_order → %s", result)
             _audit({"iter": iteration, "phase": "order",
-                    "best": best, "size": size, "result": result, "coid": coid})
+                    "best": best, "size": size, "result": result, "coid": coid,
+                    "kelly": _kelly})
+
+            # Cooldown automático si place_order rechazó por motivo persistente.
+            # Antes el bot reintentaba el mismo USDJPY 139 veces/hora aunque
+            # estaba bloqueado por LOW_PROFIT_PAIR.
+            if not result.get("ok"):
+                _reason = result.get("reason", "")
+                if _reason in COOLDOWN_REASONS:
+                    _until = time.time() + SYMBOL_COOLDOWN_AFTER_REJECT_MIN * 60
+                    _SYMBOL_COOLDOWN_UNTIL[best["symbol"]] = _until
+                    log.info("cooldown set for %s due to %s (%d min)",
+                             best["symbol"], _reason,
+                             SYMBOL_COOLDOWN_AFTER_REJECT_MIN)
+                    _audit({"iter": iteration, "phase": "cooldown_set",
+                            "symbol": best["symbol"], "reason": _reason,
+                            "until": datetime.fromtimestamp(_until, timezone.utc).isoformat()})
 
             # Research log — capture the full setup snapshot for any successful
             # placement (paper or demo). This is the per-trade feedback record.

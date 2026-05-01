@@ -353,17 +353,97 @@ def guard_low_profit_pair(ctx: dict):
     return None
 
 
-GUARDS = [
+# ═══════════════════════════════════════════════════════════════════════════
+# Guards activos. Cada guard se categoriza como ENFORCE (rechaza) o LOG_ONLY
+# (loggea pero no bloquea). Esto permite "stress test" del usuario donde
+# todos los caps están relajados pero seguimos midiendo cuántas veces se
+# habrían disparado en producción.
+#
+# Modo controlado vía env GUARD_MODE:
+#   - "enforce" (default producción): rejection → trade bloqueado
+#   - "log_only" (test mode actual): rejection se devuelve con flag log_only
+#       para que el caller la registre pero NO bloquea el trade
+#   - "off": no corre guards (no usar en live)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Guards que SIEMPRE bloquean (no se pueden bypasear ni en stress test —
+# son sanity checks, no caps de risk).
+HARD_GUARDS = [
     guard_sl_tp_required,
-    # guard_max_positions,  # DISABLED
     guard_sl_tp_side,
 ]
 
+# Guards que producen rejection en modo enforce y log_only en modo log_only.
+SOFT_GUARDS = [
+    guard_rr,
+    guard_blocked_hour,
+    guard_max_positions,
+    guard_daily_dd,
+    guard_lots_cap,
+    guard_consecutive_losses,
+    guard_trades_per_day,
+    guard_risk_dollars,
+    guard_correlation,
+    guard_equity_drawdown,
+    guard_cooldown_after_losses,
+    guard_low_profit_pair,
+]
+
+
+def _guard_mode() -> str:
+    return (os.environ.get("GUARD_MODE", "enforce") or "enforce").strip().lower()
+
 
 def run_guards(ctx: dict):
-    """Returns the first failing guard, or None if all pass."""
-    for g in GUARDS:
+    """Run hard guards (always enforce) then soft guards (mode-dependent).
+
+    Returns:
+      - dict {reason, detail, ...} si una hard guard rechaza, OR si una
+        soft guard rechaza en modo enforce → caller bloquea el trade.
+      - dict {reason, detail, log_only: True, would_block_in_enforce: [...]}
+        si soft guards rechazaron pero estamos en modo log_only → caller
+        registra pero NO bloquea.
+      - None si todo pasa.
+    """
+    # 1) Hard guards: SL/TP required + side. Siempre enforce.
+    for g in HARD_GUARDS:
+        res = g(ctx)
+        if res is not None:
+            return res
+
+    mode = _guard_mode()
+    if mode == "off":
+        return None
+
+    # 2) Soft guards: en enforce, rechaza al primero. En log_only, recolecta
+    #    todos y devuelve un payload informativo sin bloquear.
+    if mode == "log_only":
+        violations = []
+        for g in SOFT_GUARDS:
+            try:
+                res = g(ctx)
+            except Exception as exc:  # noqa: BLE001  guards no deben crashear el bot
+                violations.append({"guard": g.__name__, "error": str(exc)})
+                continue
+            if res is not None:
+                violations.append({"guard": g.__name__, **res})
+        if violations:
+            return {
+                "reason": "SOFT_GUARDS_LOG_ONLY",
+                "detail": f"{len(violations)} soft guard(s) would block in enforce mode",
+                "log_only": True,
+                "would_block_in_enforce": violations,
+            }
+        return None
+
+    # mode == "enforce" → primer fail bloquea
+    for g in SOFT_GUARDS:
         res = g(ctx)
         if res is not None:
             return res
     return None
+
+
+# Backwards-compat: el array original GUARDS sigue exportándose por si
+# algún test viejo lo importa.
+GUARDS = HARD_GUARDS + SOFT_GUARDS

@@ -15,6 +15,11 @@ from .timeframes import (
 )
 from .sessions import session_features, session_label, SessionFeatureSet
 from .enums import GateState, ImpactLevel, impact_rank, max_impact
+from . import capital_ledger
+from . import expectancy_tracker
+from . import regime
+from . import correlation
+from . import sizing_kelly
 
 __all__ = [
     "ensure_utc",
@@ -35,4 +40,9 @@ __all__ = [
     "ImpactLevel",
     "impact_rank",
     "max_impact",
+    "capital_ledger",
+    "expectancy_tracker",
+    "regime",
+    "correlation",
+    "sizing_kelly",
 ]

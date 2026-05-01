@@ -193,6 +193,118 @@ async def health():
     return {"ok": True, "db": db_ok, "auth": bool(DASHBOARD_TOKEN)}
 
 
+# ───────────────────────── capital ledger ─────────────────────────
+# Importa los módulos compartidos. Si falla (ej. en tests), endpoints
+# devuelven 503.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent /
+                           "mcp-scaffolds" / "_shared"))
+    from common import capital_ledger as _capital_ledger_mod
+    from common import expectancy_tracker as _expectancy_mod
+    from common import regime as _regime_mod
+    _SHARED_AVAILABLE = True
+except ImportError as exc:
+    log.warning("shared modules not importable: %s", exc)
+    _capital_ledger_mod = None  # type: ignore
+    _expectancy_mod = None  # type: ignore
+    _regime_mod = None  # type: ignore
+    _SHARED_AVAILABLE = False
+
+
+@api_router.get("/capital")
+async def get_capital():
+    """Snapshot del capital_ledger: target vs starting vs current vs peak.
+
+    Reemplaza el patrón anterior de "capital hardcoded $800". Ahora se
+    distinguen explícitamente:
+      - **target_capital**: la meta del plan ($800). Nunca cambia.
+      - **starting_balance**: balance al inicio de esta sesión de trading.
+      - **current_balance**: balance live de MT5.
+      - **peak_equity**: equity máximo alcanzado (para DD all-time).
+    """
+    if not _SHARED_AVAILABLE or _capital_ledger_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    try:
+        bal, source = _live_balance(fallback=_capital_fallback())
+        m = _capital_ledger_mod.metrics(current_balance=bal)
+        m["balance_source"] = source
+        m["ok"] = True
+        return m
+    except Exception as exc:
+        return {"ok": False, "reason": "LEDGER_ERROR", "detail": str(exc)}
+
+
+class CapitalResetPayload(BaseModel):
+    """Payload para POST /api/capital/reset — declara nuevo starting_balance."""
+    starting_balance: float = Field(gt=0, le=10_000_000)
+    note: str = Field(default="", max_length=200)
+
+
+@api_router.post("/capital/reset", dependencies=[Depends(require_token)])
+async def post_capital_reset(payload: CapitalResetPayload):
+    """``/api/capital/reset`` — establece un nuevo punto de partida.
+
+    Usar cuando recargás cuenta demo o después de un cashout en live."""
+    if not _SHARED_AVAILABLE or _capital_ledger_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    ledger = _capital_ledger_mod.reset(payload.starting_balance,
+                                        note=payload.note or "via api")
+    return {"ok": True, "ledger": ledger}
+
+
+class CapitalEventPayload(BaseModel):
+    amount: float = Field(gt=0, le=10_000_000)
+    note: str = Field(default="", max_length=200)
+
+
+@api_router.post("/capital/deposit", dependencies=[Depends(require_token)])
+async def post_capital_deposit(payload: CapitalEventPayload):
+    if not _SHARED_AVAILABLE or _capital_ledger_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    bal, _ = _live_balance(fallback=_capital_fallback())
+    ledger = _capital_ledger_mod.record_deposit(payload.amount,
+                                                  balance_after=bal,
+                                                  note=payload.note or "via api")
+    return {"ok": True, "ledger": ledger}
+
+
+@api_router.post("/capital/withdrawal", dependencies=[Depends(require_token)])
+async def post_capital_withdrawal(payload: CapitalEventPayload):
+    if not _SHARED_AVAILABLE or _capital_ledger_mod is None:
+        raise HTTPException(503, "shared modules not available")
+    bal, _ = _live_balance(fallback=_capital_fallback())
+    ledger = _capital_ledger_mod.record_withdrawal(payload.amount,
+                                                     balance_after=bal,
+                                                     note=payload.note or "via api")
+    return {"ok": True, "ledger": ledger}
+
+
+# ───────────────────────── expectancy ─────────────────────────
+
+@api_router.get("/expectancy")
+async def get_expectancy(min_n: int = 0):
+    """Lista combos (strategy:symbol) ordenados por expectancy descendente."""
+    if not _SHARED_AVAILABLE or _expectancy_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    return {"ok": True, "combos": _expectancy_mod.list_combos(min_n=min_n)}
+
+
+@api_router.get("/expectancy/edge")
+async def get_expectancy_edge(strategy_id: str, symbol: str):
+    """Verdict (PROVEN/UNCERTAIN/NEGATIVE) para un combo."""
+    if not _SHARED_AVAILABLE or _expectancy_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    return {"ok": True, **_expectancy_mod.edge_status(strategy_id, symbol)}
+
+
+@api_router.get("/expectancy/heatmap")
+async def get_expectancy_heatmap(strategy_id: str, symbol: str):
+    """Heatmap por hora UTC para un (strategy, symbol)."""
+    if not _SHARED_AVAILABLE or _expectancy_mod is None:
+        return {"ok": False, "reason": "SHARED_NOT_AVAILABLE"}
+    return {"ok": True, "heatmap": _expectancy_mod.hour_heatmap(strategy_id, symbol)}
+
+
 @api_router.get("/plan/data")
 async def get_plan_data():
     bal, source = _resolve_capital()
