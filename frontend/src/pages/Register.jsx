@@ -88,6 +88,38 @@ export default function Register() {
                         </p>
                     </div>
 
+                    {/* Aviso de qué van a poder hacer */}
+                    <div
+                        className="border-l-2 px-3 py-2.5 text-[11px] leading-relaxed"
+                        style={{
+                            borderColor: "var(--blue)",
+                            background: "rgba(59,130,246,0.05)",
+                        }}
+                    >
+                        <div className="font-mono font-bold text-[var(--blue)] mb-1">
+                            QUÉ PODÉS HACER CON ESTA CUENTA
+                        </div>
+                        <ul className="space-y-1 text-[var(--text-dim)] list-disc list-inside">
+                            <li>
+                                Ver el bot del admin operando en vivo (
+                                <strong className="text-white">read-only</strong>).
+                            </li>
+                            <li>
+                                Guardar tu mode novato/experto y preferencias visuales.
+                            </li>
+                            <li>
+                                <strong className="text-[var(--text-faint)]">
+                                    Pronto:
+                                </strong>{" "}
+                                conectar tu MT5 y que el bot opere con tu propia cuenta XM.
+                            </li>
+                        </ul>
+                        <div className="mt-2 text-[var(--text-faint)]">
+                            Tu cuenta NO afecta la cuenta del admin. El bot global
+                            sigue siendo del proyecto, solo el admin puede modificarlo.
+                        </div>
+                    </div>
+
                     <div>
                         <label
                             className="kicker block mb-2"
