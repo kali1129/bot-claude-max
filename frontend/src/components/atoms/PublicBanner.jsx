@@ -14,7 +14,7 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import {
-    Eye, ExternalLink, UserPlus, ChevronRight, X, Sparkles,
+    Eye, ExternalLink, UserPlus, ChevronRight, X, Sparkles, LogIn,
 } from "lucide-react";
 import { useAuth } from "@/lib/AuthProvider";
 
@@ -123,16 +123,28 @@ export default function PublicBanner() {
                     <X size={14} />
                 </button>
 
-                {/* Header */}
-                <div className="flex items-center gap-2 mb-2">
-                    <Eye size={14} className="text-[var(--green-bright)]" />
-                    <span className="kicker text-[var(--green-bright)] font-bold tracking-widest">
-                        // MODO DEMO PÚBLICO
-                    </span>
+                {/* Header con CTA Login prominente a la derecha */}
+                <div className="flex items-start justify-between gap-4 flex-wrap mb-3">
+                    <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Eye size={14} className="text-[var(--green-bright)]" />
+                            <span className="kicker text-[var(--green-bright)] font-bold tracking-widest">
+                                // MODO DEMO PÚBLICO
+                            </span>
+                        </div>
+                        <h2 className="font-display text-2xl lg:text-3xl font-black mb-1 leading-tight">
+                            Estás viendo el bot operar en vivo
+                        </h2>
+                    </div>
+                    <Link
+                        to="/login"
+                        className="btn-sharp primary btn-xl flex items-center gap-2 mr-8"
+                        data-testid="banner-login-cta"
+                    >
+                        <LogIn size={14} />
+                        Iniciar sesión
+                    </Link>
                 </div>
-                <h2 className="font-display text-2xl lg:text-3xl font-black mb-1 leading-tight">
-                    Estás viendo el bot operar en vivo
-                </h2>
                 <p className="text-sm text-[var(--text-dim)] mb-5 max-w-[640px]">
                     Esta es la cuenta del admin del proyecto. Vos podés mirar
                     todo en tiempo real, pero <strong>no podés modificar
@@ -223,15 +235,18 @@ export default function PublicBanner() {
                             </div>
                         </div>
                         <div className="font-display text-base font-bold mb-1.5">
-                            Operar de verdad con XM
+                            Probar con tu cuenta XM
                         </div>
                         <p className="text-[11px] text-[var(--text-dim)] leading-relaxed mb-3">
-                            Creá tu cuenta XM (gratis) →{" "}
-                            <Link to="/register" className="underline">
-                                cuenta acá
-                            </Link>{" "}
-                            → conectá tu MT5 (próximamente). El bot va a
-                            operar por vos.
+                            Probá el bot con tu propia cuenta XM, en lugar de
+                            datos ficticios. Funciona con tu cuenta{" "}
+                            <strong className="text-white">demo</strong>{" "}
+                            (sin riesgo, $100k virtuales) o con tu cuenta{" "}
+                            <strong className="text-white">real</strong>{" "}
+                            (con dinero real). Vos elegís cuál conectar.
+                        </p>
+                        <p className="text-[10px] text-[var(--text-faint)] mb-3 italic">
+                            ¿No tenés cuenta XM aún? Creala gratis en 2 min ↓
                         </p>
                         <a
                             href={XM_REFERRAL}
@@ -247,18 +262,8 @@ export default function PublicBanner() {
                 </div>
 
                 {/* Footer micro */}
-                <div className="mt-4 text-[10px] text-[var(--text-faint)] flex flex-wrap gap-3 items-center justify-between">
-                    <div>
-                        Si ya tenés cuenta del bot,{" "}
-                        <Link
-                            to="/login"
-                            className="text-[var(--green-bright)] underline"
-                        >
-                            iniciá sesión acá
-                        </Link>
-                        .
-                    </div>
-                    <div>El bot opera sobre cuentas demo · sin riesgo real durante el período de prueba.</div>
+                <div className="mt-4 text-[10px] text-[var(--text-faint)] text-center md:text-right">
+                    El bot opera sobre cuentas demo durante este período de prueba — sin riesgo real.
                 </div>
             </div>
         </div>
