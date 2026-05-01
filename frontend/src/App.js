@@ -4,7 +4,7 @@ import { Toaster } from "sonner";
 
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SettingsProvider, useSettings } from "@/lib/userMode";
-import { AuthProvider, RequireAdmin } from "@/lib/AuthProvider";
+import { AuthProvider, RequireAdmin, RequireUser } from "@/lib/AuthProvider";
 import { OnboardingGate, RedirectIfOnboarded } from "@/lib/onboardingGate";
 
 import AppShell from "@/components/AppShell";
@@ -21,6 +21,7 @@ import Live from "@/pages/Live";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
 import Admin from "@/pages/Admin";
+import MyAccount from "@/pages/MyAccount";
 
 // Wrapper que combina OnboardingGate + AppShell (sidebar + topbar) para
 // las rutas "normales" del dashboard.
@@ -167,6 +168,17 @@ function App() {
                                             <RequireAdmin>
                                                 <Admin />
                                             </RequireAdmin>
+                                        </ShellRoute>
+                                    }
+                                />
+                                {/* Mi Cuenta — cualquier usuario logueado */}
+                                <Route
+                                    path="/mi-cuenta"
+                                    element={
+                                        <ShellRoute>
+                                            <RequireUser>
+                                                <MyAccount />
+                                            </RequireUser>
                                         </ShellRoute>
                                     }
                                 />

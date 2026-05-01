@@ -127,6 +127,38 @@ export function RequireAdmin({ children, fallback }) {
     return children;
 }
 
+// Wrapper para rutas que requieren cualquier usuario logueado (no necesita
+// admin, pero sí auth). Si no hay sesión, muestra "Iniciá sesión" CTA.
+export function RequireUser({ children, fallback }) {
+    const { isAuthenticated, loading, user } = useAuth();
+    if (loading) return null;
+    if (!isAuthenticated) return fallback || <NotLoggedIn />;
+    return children;
+}
+
+function NotLoggedIn() {
+    const navigate = useNavigate();
+    return (
+        <div className="min-h-[60vh] flex items-center justify-center px-6">
+            <div className="panel p-8 max-w-md text-center">
+                <div className="kicker mb-3">// ACCESO RESTRINGIDO</div>
+                <h2 className="font-display text-2xl font-black mb-3">
+                    Iniciá sesión para ver esto
+                </h2>
+                <p className="text-sm text-[var(--text-dim)] mb-5">
+                    Esta sección es solo para usuarios registrados.
+                </p>
+                <button
+                    onClick={() => navigate("/login")}
+                    className="btn-sharp primary"
+                >
+                    Iniciar sesión
+                </button>
+            </div>
+        </div>
+    );
+}
+
 function NotAdmin({ user }) {
     const navigate = useNavigate();
     return (

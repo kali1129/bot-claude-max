@@ -26,7 +26,7 @@ import {
     Database,
 } from "lucide-react";
 
-import { apiGet, apiPatch, apiDelete } from "@/lib/api";
+import { apiGet, apiPatch, apiPost, apiDelete } from "@/lib/api";
 import { useAuth } from "@/lib/AuthProvider";
 
 import SectionHeader from "@/components/atoms/SectionHeader";
@@ -112,6 +112,40 @@ export default function Admin() {
         }
     };
 
+    const extendTrial = async (userId, days = 30) => {
+        const input = window.prompt(`¿Cuántos días extender el trial?`, "30");
+        if (!input) return;
+        const d = parseInt(input, 10);
+        if (!d || d <= 0 || d > 365) {
+            toast.error("Días inválido (1-365)");
+            return;
+        }
+        setBusyId(userId);
+        try {
+            const r = await apiPost(`/admin/users/${userId}/extend-trial`, { days: d });
+            toast.success(`Trial extendido +${d} días — válido hasta ${new Date(r.data?.paid_until).toLocaleDateString()}`);
+            refresh();
+        } catch (e) {
+            toast.error(e.response?.data?.detail || "Error extendiendo trial");
+        } finally {
+            setBusyId(null);
+        }
+    };
+
+    const forceStop = async (userId) => {
+        if (!window.confirm("¿Forzar el stop de su bot? El run se va a marcar como admin_force_stop.")) return;
+        setBusyId(userId);
+        try {
+            await apiPost(`/admin/users/${userId}/force-stop-bot`, {});
+            toast.success("Bot detenido por admin");
+            refresh();
+        } catch (e) {
+            toast.error(e.response?.data?.detail || "Error force-stop");
+        } finally {
+            setBusyId(null);
+        }
+    };
+
     if (loading) {
         return (
             <section className="px-6 lg:px-10 py-8">
@@ -150,7 +184,7 @@ export default function Admin() {
                 />
 
                 {/* Stats cards */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
                     <KpiCard
                         label="Usuarios totales"
                         value={userStats.total ?? 0}
@@ -162,18 +196,26 @@ export default function Admin() {
                     <KpiCard
                         label="Admins"
                         value={userStats.admins ?? 0}
-                        sublabel="con control total"
+                        sublabel="control total"
                         icon={Shield}
                         color="green"
                         testId="admin-kpi-admins"
                     />
                     <KpiCard
-                        label="Usuarios regulares"
+                        label="Regulares"
                         value={userStats.regular ?? 0}
                         sublabel="role=user"
                         icon={UserPlus}
                         color="white"
                         testId="admin-kpi-regular"
+                    />
+                    <KpiCard
+                        label="Bots activos / cupos"
+                        value={`${stats?.slots?.active ?? 0}/${stats?.slots?.max_concurrent ?? "—"}`}
+                        sublabel={`${stats?.slots?.available ?? 0} libre${(stats?.slots?.available ?? 0) !== 1 ? "s" : ""}`}
+                        icon={Activity}
+                        color={(stats?.slots?.available ?? 0) > 0 ? "green" : "red"}
+                        testId="admin-kpi-slots"
                     />
                     <KpiCard
                         label="Trades en DB"
@@ -263,11 +305,43 @@ export default function Admin() {
                                                         {isAdminRole ? "ADMIN" : "USER"}
                                                     </span>
                                                 </td>
-                                                <td className="px-2 py-2.5 text-[var(--text-faint)] italic">
-                                                    no conectado
+                                                                <td className="px-2 py-2.5">
+                                                    {u.broker_connected ? (
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="kicker text-[var(--green-bright)]">●</span>
+                                                            <span className="text-[10px]">
+                                                                {u.broker_login} · {u.broker_demo ? "DEMO" : "REAL"}
+                                                            </span>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-[var(--text-faint)] italic text-[10px]">
+                                                            no conectado
+                                                        </span>
+                                                    )}
                                                 </td>
-                                                <td className="px-2 py-2.5 text-[var(--text-faint)] italic">
-                                                    inactivo
+                                                <td className="px-2 py-2.5">
+                                                    {u.bot_running ? (
+                                                        <div className="flex flex-col">
+                                                            <span className="kicker text-[var(--green-bright)]">● ACTIVO</span>
+                                                            {u.trial_seconds_remaining != null ? (
+                                                                <span className="text-[9px] text-[var(--text-faint)]">
+                                                                    {u.trial_expired ? (
+                                                                        <span className="text-[var(--red)]">trial vencido</span>
+                                                                    ) : (
+                                                                        <>
+                                                                            {Math.floor(u.trial_seconds_remaining / 3600)}h {Math.floor((u.trial_seconds_remaining % 3600) / 60)}m
+                                                                        </>
+                                                                    )}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-[9px] text-[var(--green-bright)]">sin límite</span>
+                                                            )}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-[var(--text-faint)] italic text-[10px]">
+                                                            inactivo
+                                                        </span>
+                                                    )}
                                                 </td>
                                                 <td className="px-2 py-2.5 text-[var(--text-dim)]">
                                                     <span className="flex items-center gap-1">
@@ -279,9 +353,33 @@ export default function Admin() {
                                                     </span>
                                                 </td>
                                                 <td className="px-2 py-2.5 text-right">
-                                                    <div className="flex items-center justify-end gap-1">
+                                                    <div className="flex items-center justify-end gap-1 flex-wrap">
                                                         {!isMe ? (
                                                             <>
+                                                                {u.bot_running && !isAdminRole ? (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => extendTrial(u.id)}
+                                                                        disabled={isBusy}
+                                                                        className="btn-sharp success text-[10px] px-2 py-1"
+                                                                        title="Extender trial (días)"
+                                                                        data-testid={`admin-extend-${u.id}`}
+                                                                    >
+                                                                        +Trial
+                                                                    </button>
+                                                                ) : null}
+                                                                {u.bot_running ? (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => forceStop(u.id)}
+                                                                        disabled={isBusy}
+                                                                        className="btn-sharp text-[10px] px-2 py-1"
+                                                                        title="Forzar stop del bot"
+                                                                        data-testid={`admin-stop-${u.id}`}
+                                                                    >
+                                                                        Stop
+                                                                    </button>
+                                                                ) : null}
                                                                 <button
                                                                     type="button"
                                                                     onClick={() =>
@@ -297,19 +395,9 @@ export default function Admin() {
                                                                     data-testid={`admin-promote-${u.id}`}
                                                                 >
                                                                     {isAdminRole ? (
-                                                                        <>
-                                                                            <UserMinus size={10} />
-                                                                            <span className="hidden md:inline">
-                                                                                Demover
-                                                                            </span>
-                                                                        </>
+                                                                        <UserMinus size={10} />
                                                                     ) : (
-                                                                        <>
-                                                                            <Shield size={10} />
-                                                                            <span className="hidden md:inline">
-                                                                                Promover
-                                                                            </span>
-                                                                        </>
+                                                                        <Shield size={10} />
                                                                     )}
                                                                 </button>
                                                                 <button

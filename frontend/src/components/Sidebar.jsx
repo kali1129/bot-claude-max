@@ -10,6 +10,7 @@ import {
     LifeBuoy,
     FlaskConical,
     Shield,
+    User,
 } from "lucide-react";
 
 import { apiGet } from "@/lib/api";
@@ -23,19 +24,22 @@ const NAV_ITEMS = [
     { to: "/operaciones", label: "Operaciones", icon: BookOpenCheck, code: "02", modes: ["novato", "experto"], adminOnly: false },
     { to: "/estrategias", label: "Estrategias", icon: Crosshair, code: "03", modes: ["novato", "experto"], adminOnly: false },
     { to: "/estadisticas", label: "Estadísticas", icon: BarChart3, code: "04", modes: ["novato", "experto"], adminOnly: false },
-    { to: "/configuracion", label: "Configuración", icon: Cog, code: "05", modes: ["novato", "experto"], adminOnly: true },
-    { to: "/ayuda", label: "Ayuda", icon: LifeBuoy, code: "06", modes: ["novato", "experto"], adminOnly: false },
-    { to: "/avanzado", label: "Avanzado", icon: FlaskConical, code: "07", modes: ["experto"], adminOnly: true },
+    { to: "/mi-cuenta", label: "Mi Cuenta", icon: User, code: "05", modes: ["novato", "experto"], adminOnly: false, userOnly: true },
+    { to: "/configuracion", label: "Configuración", icon: Cog, code: "06", modes: ["novato", "experto"], adminOnly: true },
+    { to: "/ayuda", label: "Ayuda", icon: LifeBuoy, code: "07", modes: ["novato", "experto"], adminOnly: false },
+    { to: "/avanzado", label: "Avanzado", icon: FlaskConical, code: "08", modes: ["experto"], adminOnly: true },
     { to: "/admin", label: "Admin Panel", icon: Shield, code: "★", modes: ["novato", "experto"], adminOnly: true, adminAccent: true },
 ];
 
 export default function Sidebar({ mobile = false, onNavigate }) {
     const { settings } = useSettings();
-    const { isAdmin } = useAuth();
+    const { isAdmin, isAuthenticated } = useAuth();
     const mode = settings?.mode || "novato";
     const visible = NAV_ITEMS.filter((it) => {
         if (!it.modes.includes(mode)) return false;
         if (it.adminOnly && !isAdmin) return false;
+        // userOnly: solo se muestra si está logueado (no para anónimos)
+        if (it.userOnly && !isAuthenticated) return false;
         return true;
     });
 

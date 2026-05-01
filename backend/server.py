@@ -31,6 +31,9 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import auth as auth_mod  # noqa: E402  (relativa al WORKINGDIR del backend)
+import broker_manager  # noqa: E402
+import bot_supervisor  # noqa: E402
+import crypto_box  # noqa: E402
 
 from plan_content import (
     CAPITAL,
@@ -85,16 +88,60 @@ async def lifespan(_app: FastAPI):
         await state.db.checklists.create_index("date", unique=True)
         # FASE 1: bootstrap admin + crear índice unique en users.email
         await auth_mod.ensure_users_collection(state.db)
+        await broker_manager.ensure_indexes(state.db)
+        await bot_supervisor.ensure_indexes(state.db)
         log.info("connected to mongo db=%s", db_name)
+    # Background trial checker — cada 60s revisa si algún user-bot expiró
+    # las 24h de trial y lo detiene automáticamente.
+    _start_trial_checker()
     # Background equity sampler — persiste samples cada N segundos para que
     # el chart del dashboard sobreviva refresh / cierre de tab. Sin esto, el
     # chart arrancaba desde cero en cada visita.
     _start_equity_sampler()
     yield
+    _stop_trial_checker()
     _stop_equity_sampler()
     if state.mongo_client is not None:
         state.mongo_client.close()
         log.info("mongo connection closed")
+
+
+# ─────────────────────────── trial checker (asyncio bg task) ──────────────
+
+import asyncio  # noqa: E402
+
+_trial_task = None
+
+
+def _start_trial_checker():
+    global _trial_task
+    if _trial_task is not None and not _trial_task.done():
+        return
+
+    async def _loop():
+        while True:
+            try:
+                if state.db is not None:
+                    await bot_supervisor.check_expired_trials(state.db)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("trial_checker iteration failed: %s", exc)
+            await asyncio.sleep(60)
+
+    try:
+        _trial_task = asyncio.create_task(_loop())
+        log.info("trial checker started (interval=60s)")
+    except Exception as exc:
+        log.warning("failed to start trial checker: %s", exc)
+
+
+def _stop_trial_checker():
+    global _trial_task
+    if _trial_task is not None:
+        try:
+            _trial_task.cancel()
+        except Exception:
+            pass
+        _trial_task = None
 
 
 # ─────────────────────────── equity sampler thread ───────────────────────────
@@ -353,15 +400,26 @@ async def admin_list_users(
     _admin=Depends(auth_mod.require_admin),
     db=Depends(get_db),
 ):
-    """Lista todos los usuarios registrados. SIN password_hash."""
+    """Lista usuarios + broker connected + bot running + trial info.
+    Versión enriquecida — el frontend muestra todo en una tabla."""
     if db is None:
         raise HTTPException(503, "DB no disponible")
     cursor = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
     users = await cursor.to_list(length=10_000)
-    # Normalizar id (string) y date para JSON
     out = []
     for u in users:
-        u["id"] = str(u.pop("_id", u.get("id", "")))
+        uid = str(u.pop("_id", u.get("id", "")))
+        u["id"] = uid
+        # Enrich con broker + bot
+        broker = await broker_manager.get_creds(db, uid)
+        bot = await bot_supervisor.status(db, uid)
+        u["broker_connected"] = bool(broker)
+        u["broker_demo"] = broker.get("is_demo") if broker else None
+        u["broker_login"] = broker.get("mt5_login") if broker else None
+        u["broker_server"] = broker.get("mt5_server") if broker else None
+        u["bot_running"] = bool(bot.get("running"))
+        u["trial_seconds_remaining"] = bot.get("trial_seconds_remaining")
+        u["trial_expired"] = bool(bot.get("trial_expired"))
         out.append(u)
     return {
         "ok": True,
@@ -376,21 +434,26 @@ async def admin_get_user(
     _admin=Depends(auth_mod.require_admin),
     db=Depends(get_db),
 ):
-    """Detalle de un usuario + sus stats agregadas (FASE 2: trades, MT5)."""
+    """Detalle de un usuario + broker + bot status + trial info."""
     if db is None:
         raise HTTPException(503, "DB no disponible")
     user = await db.users.find_one({"_id": user_id}, {"password_hash": 0})
     if not user:
         raise HTTPException(404, "usuario no existe")
     user["id"] = str(user.pop("_id"))
-    # FASE 2: agregaremos sus trades, MT5 status, etc.
+
+    broker = await broker_manager.get_creds(db, user_id)
+    bot = await bot_supervisor.status(db, user_id)
+
+    # Trades count (placeholder hasta FASE 3 — MT5 real per user)
+    trades_count = await db.trades.count_documents({"user_id": user_id})
+
     return {
         "ok": True,
         "user": user,
-        "trades_count": 0,         # placeholder hasta FASE 2
-        "broker_connected": False,  # placeholder hasta FASE 2
-        "broker": None,
-        "bot_active": False,
+        "broker": broker,                  # None si no conectado
+        "bot": bot,                        # running/last_run/trial info
+        "trades_count": trades_count,
     }
 
 
@@ -446,22 +509,165 @@ async def admin_delete_user(
     return {"ok": True, "deleted_id": user_id}
 
 
+# ─────────────────────────── /api/users/me/broker ───────────────────────
+# FASE 2: cada usuario conecta SU cuenta MT5. Las credenciales se cifran
+# con AES-GCM antes de persistir. El password en plain NUNCA viaja al
+# cliente — solo nuestro proceso server lo descifra al iniciar la conexión.
+
+class BrokerCredsPayload(BaseModel):
+    mt5_login: int = Field(gt=0, lt=10**12)
+    mt5_password: str = Field(min_length=4, max_length=128)
+    mt5_server: str = Field(min_length=2, max_length=100)
+    mt5_path: Optional[str] = Field(default=None, max_length=500)
+    is_demo: bool = True
+
+
+class BrokerTestPayload(BrokerCredsPayload):
+    """Mismo shape pero el endpoint /test no persiste."""
+
+
+@api_router.get("/users/me/broker")
+async def get_my_broker(
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    """Retorna info de tus credenciales (sin password). 404 si no
+    tenés conectado."""
+    creds = await broker_manager.get_creds(db, current.id)
+    if not creds:
+        return {"ok": True, "has_creds": False}
+    return {"ok": True, **creds}
+
+
+@api_router.post("/users/me/broker")
+async def post_my_broker(
+    payload: BrokerCredsPayload,
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    """Guarda/actualiza tus credenciales MT5. Encripta password."""
+    if current.legacy_admin:
+        # Legacy DASHBOARD_TOKEN no tiene user_id de verdad
+        raise HTTPException(400, "usá un JWT con login real para conectar broker")
+    saved = await broker_manager.save_creds(
+        db, current.id,
+        mt5_login=payload.mt5_login,
+        mt5_password=payload.mt5_password,
+        mt5_server=payload.mt5_server,
+        mt5_path=payload.mt5_path,
+        is_demo=payload.is_demo,
+    )
+    return {"ok": True, **saved}
+
+
+@api_router.delete("/users/me/broker")
+async def delete_my_broker(
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    """Elimina tus creds. Si tu bot está corriendo, también lo detiene."""
+    # Stop bot si está corriendo
+    await bot_supervisor.stop_bot(db, current.id, reason="broker_disconnected")
+    deleted = await broker_manager.delete_creds(db, current.id)
+    return {"ok": True, "deleted": deleted}
+
+
+@api_router.post("/users/me/broker/test")
+async def test_my_broker(
+    payload: BrokerTestPayload,
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    """Test connection (sin guardar). Persiste el resultado del test
+    si las creds del usuario ya están guardadas."""
+    res = await broker_manager.test_connection_live(
+        mt5_login=payload.mt5_login,
+        mt5_password=payload.mt5_password,
+        mt5_server=payload.mt5_server,
+        mt5_path=payload.mt5_path,
+    )
+    # Si user ya tiene creds guardadas, persiste el resultado del test.
+    if await broker_manager.has_creds(db, current.id):
+        await broker_manager.record_test_result(
+            db, current.id,
+            ok=bool(res.get("ok")),
+            error=res.get("error"),
+        )
+    return res
+
+
+# ─────────────────────────── /api/users/me/bot ───────────────────────
+# Lifecycle del bot per-user. Slot cap + trial 24h + admin exempt.
+
+@api_router.get("/users/me/bot")
+async def get_my_bot(
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    return await bot_supervisor.status(db, current.id)
+
+
+@api_router.post("/users/me/bot/start")
+async def start_my_bot(
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    if current.legacy_admin:
+        raise HTTPException(400, "usá un JWT con login real para arrancar bot")
+    res = await bot_supervisor.start_bot(db, current.id)
+    if not res.get("ok"):
+        # Mapeo a HTTP code según reason
+        reason = res.get("reason", "")
+        if reason == "ALREADY_RUNNING":
+            raise HTTPException(409, res.get("detail") or "ya está corriendo")
+        if reason == "NO_BROKER":
+            raise HTTPException(412, res.get("detail") or "conectá tu broker primero")
+        if reason == "SLOTS_FULL":
+            raise HTTPException(503, res.get("detail") or "slots llenos")
+        raise HTTPException(400, res.get("detail") or reason)
+    return res
+
+
+@api_router.post("/users/me/bot/stop")
+async def stop_my_bot(
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    if current.legacy_admin:
+        raise HTTPException(400, "usá un JWT con login real")
+    res = await bot_supervisor.stop_bot(db, current.id, reason="user_stop")
+    if not res.get("ok"):
+        raise HTTPException(404, res.get("detail") or "no estaba corriendo")
+    return res
+
+
+@api_router.get("/users/me/bot/slots")
+async def my_bot_slots(
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    """Info global de slots para mostrar en el banner: cuántos hay activos
+    y cuántos quedan disponibles. Cualquier usuario lo puede consultar."""
+    return await bot_supervisor.slot_info(db)
+
+
+# ─────────────────────────── /api/admin/* enriquecidos ───────────────
+
 @api_router.get("/admin/stats")
 async def admin_stats(
     _admin=Depends(auth_mod.require_admin),
     db=Depends(get_db),
 ):
-    """Stats agregadas para el dashboard admin: cuántos users, cuántos
-    admins, registros recientes, etc."""
+    """Stats agregadas: users, admins, registros recientes, slots, trades."""
     if db is None:
         raise HTTPException(503, "DB no disponible")
     total_users = await db.users.count_documents({})
     admins = await db.users.count_documents({"role": "admin"})
     users = await db.users.count_documents({"role": "user"})
-    # Registros últimos 7 días
     from datetime import timedelta as _td
     cutoff = (datetime.now(timezone.utc) - _td(days=7)).isoformat()
     recent = await db.users.count_documents({"created_at": {"$gte": cutoff}})
+    slots = await bot_supervisor.slot_info(db)
     return {
         "ok": True,
         "users": {
@@ -470,10 +676,51 @@ async def admin_stats(
             "regular": users,
             "registered_last_7d": recent,
         },
+        "slots": slots,
         "trades": {
             "total": await db.trades.count_documents({}),
         },
     }
+
+
+# ─────────────────────────── admin actions on user ────────────────────
+
+class AdminExtendTrialPayload(BaseModel):
+    days: int = Field(gt=0, le=365)
+
+
+@api_router.post(
+    "/admin/users/{user_id}/extend-trial",
+    dependencies=[Depends(auth_mod.require_admin)],
+)
+async def admin_extend_trial_endpoint(
+    user_id: str,
+    payload: AdminExtendTrialPayload,
+    db=Depends(get_db),
+):
+    """Extiende el trial de un usuario por N días. Equivalente a "marca
+    como pagado hasta now+N días". Hasta que haya integración Stripe
+    real (FASE 4), esto es la única forma de extender."""
+    res = await bot_supervisor.admin_extend_trial(db, user_id, days=payload.days)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("reason", "error"))
+    return res
+
+
+@api_router.post(
+    "/admin/users/{user_id}/force-stop-bot",
+    dependencies=[Depends(auth_mod.require_admin)],
+)
+async def admin_force_stop_endpoint(
+    user_id: str,
+    db=Depends(get_db),
+):
+    """Force stop del bot de un usuario. El run queda registrado con
+    exit_reason=admin_force_stop."""
+    res = await bot_supervisor.admin_force_stop(db, user_id)
+    if not res.get("ok"):
+        raise HTTPException(404, res.get("detail", "no estaba corriendo"))
+    return res
 
 
 # ───────────────────────── capital ledger ─────────────────────────
