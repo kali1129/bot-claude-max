@@ -24,6 +24,14 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.cors import CORSMiddleware
 
+# CRÍTICO: load_dotenv ANTES de importar `auth` o cualquier módulo que lea
+# env vars al import time. Antes auth.py leía JWT_SECRET / DASHBOARD_TOKEN
+# en módulo-load → quedaban en None porque .env aún no estaba cargado.
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+import auth as auth_mod  # noqa: E402  (relativa al WORKINGDIR del backend)
+
 from plan_content import (
     CAPITAL,
     CHECKLIST_TEMPLATE,
@@ -38,10 +46,6 @@ from plan_content import (
     STRICT_RULES,
     build_markdown,
 )
-
-
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +83,8 @@ async def lifespan(_app: FastAPI):
         await state.db.trades.create_index("id", unique=True)
         await state.db.trades.create_index("client_id", unique=True, sparse=True)
         await state.db.checklists.create_index("date", unique=True)
+        # FASE 1: bootstrap admin + crear índice unique en users.email
+        await auth_mod.ensure_users_collection(state.db)
         log.info("connected to mongo db=%s", db_name)
     # Background equity sampler — persiste samples cada N segundos para que
     # el chart del dashboard sobreviva refresh / cierre de tab. Sin esto, el
@@ -175,12 +181,20 @@ api_router = APIRouter(prefix="/api")
 DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "").strip()
 
 
+# require_token: ALIAS LEGACY hacia auth.require_admin.
+# Hasta esta versión, los 31 endpoints write usaban un solo token compartido
+# (DASHBOARD_TOKEN en el bundle). Ahora aceptamos:
+#   1. JWT con role=admin (login en el dashboard)
+#   2. Bearer DASHBOARD_TOKEN (legacy — para sync_loop, telegram_notifier, etc.)
+# El "require_admin" en `auth.py` maneja ambos. Mantenemos el nombre
+# para no tener que cambiar 31 endpoints.
 def require_token(authorization: Optional[str] = Header(default=None)):
-    if not DASHBOARD_TOKEN:
-        return
-    expected = f"Bearer {DASHBOARD_TOKEN}"
-    if not authorization or not secrets.compare_digest(authorization, expected):
-        raise HTTPException(401, "missing or invalid bearer token")
+    return auth_mod.require_admin(authorization)
+
+
+def require_user_auth(authorization: Optional[str] = Header(default=None)):
+    """Alias para endpoints que aceptan cualquier usuario autenticado."""
+    return auth_mod.require_user(authorization)
 
 
 # ============ MODELS ============
@@ -269,6 +283,63 @@ async def root():
 async def health():
     db_ok = state.db is not None
     return {"ok": True, "db": db_ok, "auth": bool(DASHBOARD_TOKEN)}
+
+
+# ─────────────────────────── /api/auth/* ───────────────────────────
+# Sistema multi-usuario: register/login con JWT. Reemplaza el modelo
+# anterior de un solo `DASHBOARD_TOKEN` compartido en el bundle.
+# Endpoints públicos read-only siguen sin auth; los writes requieren
+# role=admin (Fase 1) o el legacy DASHBOARD_TOKEN.
+
+@api_router.post("/auth/register")
+async def auth_register(payload: auth_mod.RegisterPayload, db=Depends(get_db)):
+    """Crea un usuario nuevo (role=user). En Fase 1 estos usuarios pueden
+    LEER pero no modificar el bot — sus mods llegan en Fase 2 (per-user
+    bot con su propio MT5)."""
+    res = await auth_mod.register_handler(payload, db)
+    return res.model_dump()
+
+
+@api_router.post("/auth/login")
+async def auth_login(payload: auth_mod.LoginPayload, db=Depends(get_db)):
+    res = await auth_mod.login_handler(payload, db)
+    return res.model_dump()
+
+
+@api_router.get("/auth/me")
+async def auth_me(
+    current=Depends(auth_mod.require_user),
+    db=Depends(get_db),
+):
+    return await auth_mod.me_handler(current, db)
+
+
+@api_router.post("/auth/logout")
+async def auth_logout():
+    """Stateless logout — el cliente solo borra el JWT de localStorage.
+    Devolvemos OK siempre. Para revocación real necesitaríamos lista negra
+    de tokens (nice to have, no crítico)."""
+    return {"ok": True}
+
+
+@api_router.get("/auth/info")
+async def auth_info(
+    current=Depends(auth_mod.require_auth_optional),
+):
+    """Endpoint que SIEMPRE responde 200 (no requiere auth) — devuelve
+    si el caller está autenticado y su role. Útil para que el frontend
+    sepa qué mostrar (login vs dashboard) sin tener que hacer try/catch
+    sobre /me."""
+    if current is None:
+        return {"authenticated": False, "role": None, "is_admin": False}
+    return {
+        "authenticated": True,
+        "user_id": current.id,
+        "email": current.email,
+        "role": current.role,
+        "is_admin": current.is_admin,
+        "legacy_token": current.legacy_admin,
+    }
 
 
 # ───────────────────────── capital ledger ─────────────────────────

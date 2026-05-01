@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { SettingsProvider, useSettings } from "@/lib/userMode";
+import { AuthProvider, RequireAdmin } from "@/lib/AuthProvider";
 import { OnboardingGate, RedirectIfOnboarded } from "@/lib/onboardingGate";
 
 import AppShell from "@/components/AppShell";
@@ -17,6 +18,8 @@ import Stats from "@/pages/Stats";
 import Help from "@/pages/Help";
 import Advanced from "@/pages/Advanced";
 import Live from "@/pages/Live";
+import Login from "@/pages/Login";
+import Register from "@/pages/Register";
 
 // Wrapper que combina OnboardingGate + AppShell (sidebar + topbar) para
 // las rutas "normales" del dashboard.
@@ -62,90 +65,106 @@ function App() {
         <div className="App">
             <ErrorBoundary>
                 <BrowserRouter>
-                    <SettingsProvider>
-                        <Routes>
-                            {/* Onboarding wizard — sin sidebar/topbar */}
-                            <Route
-                                path="/onboarding"
-                                element={
-                                    <RedirectIfOnboarded>
-                                        <Onboarding />
-                                    </RedirectIfOnboarded>
-                                }
-                            />
+                    {/* AuthProvider DENTRO del BrowserRouter — usa useNavigate */}
+                    <AuthProvider>
+                        <SettingsProvider>
+                            <Routes>
+                                {/* Auth — sin shell, sin onboarding gate */}
+                                <Route path="/login" element={<Login />} />
+                                <Route path="/register" element={<Register />} />
 
-                            {/* Rutas principales con shell */}
-                            <Route
-                                path="/"
-                                element={
-                                    <ShellRoute>
-                                        <Home />
-                                    </ShellRoute>
-                                }
-                            />
-                            <Route
-                                path="/vivo"
-                                element={
-                                    <ShellRoute>
-                                        <Live />
-                                    </ShellRoute>
-                                }
-                            />
-                            <Route
-                                path="/operaciones"
-                                element={
-                                    <ShellRoute>
-                                        <Trades />
-                                    </ShellRoute>
-                                }
-                            />
-                            <Route
-                                path="/estrategias"
-                                element={
-                                    <ShellRoute>
-                                        <StrategiesPage />
-                                    </ShellRoute>
-                                }
-                            />
-                            <Route
-                                path="/estadisticas"
-                                element={
-                                    <ShellRoute>
-                                        <Stats />
-                                    </ShellRoute>
-                                }
-                            />
-                            <Route
-                                path="/configuracion"
-                                element={
-                                    <ShellRoute>
-                                        <Settings />
-                                    </ShellRoute>
-                                }
-                            />
-                            <Route
-                                path="/ayuda"
-                                element={
-                                    <ShellRoute>
-                                        <Help />
-                                    </ShellRoute>
-                                }
-                            />
-                            <Route
-                                path="/avanzado"
-                                element={
-                                    <ShellRoute>
-                                        <ExpertOnly>
-                                            <Advanced />
-                                        </ExpertOnly>
-                                    </ShellRoute>
-                                }
-                            />
+                                {/* Onboarding wizard — solo admin (Fase 1).
+                                    En Fase 2 cada user tendrá su onboarding. */}
+                                <Route
+                                    path="/onboarding"
+                                    element={
+                                        <RequireAdmin>
+                                            <RedirectIfOnboarded>
+                                                <Onboarding />
+                                            </RedirectIfOnboarded>
+                                        </RequireAdmin>
+                                    }
+                                />
 
-                            {/* Catch-all → home */}
-                            <Route path="*" element={<Navigate to="/" replace />} />
-                        </Routes>
-                    </SettingsProvider>
+                                {/* Rutas read-only (cualquiera puede entrar) */}
+                                <Route
+                                    path="/"
+                                    element={
+                                        <ShellRoute>
+                                            <Home />
+                                        </ShellRoute>
+                                    }
+                                />
+                                <Route
+                                    path="/vivo"
+                                    element={
+                                        <ShellRoute>
+                                            <Live />
+                                        </ShellRoute>
+                                    }
+                                />
+                                <Route
+                                    path="/operaciones"
+                                    element={
+                                        <ShellRoute>
+                                            <Trades />
+                                        </ShellRoute>
+                                    }
+                                />
+                                <Route
+                                    path="/estrategias"
+                                    element={
+                                        <ShellRoute>
+                                            <StrategiesPage />
+                                        </ShellRoute>
+                                    }
+                                />
+                                <Route
+                                    path="/estadisticas"
+                                    element={
+                                        <ShellRoute>
+                                            <Stats />
+                                        </ShellRoute>
+                                    }
+                                />
+                                <Route
+                                    path="/ayuda"
+                                    element={
+                                        <ShellRoute>
+                                            <Help />
+                                        </ShellRoute>
+                                    }
+                                />
+
+                                {/* Rutas admin-only (Fase 1) */}
+                                <Route
+                                    path="/configuracion"
+                                    element={
+                                        <ShellRoute>
+                                            <RequireAdmin>
+                                                <Settings />
+                                            </RequireAdmin>
+                                        </ShellRoute>
+                                    }
+                                />
+                                <Route
+                                    path="/avanzado"
+                                    element={
+                                        <ShellRoute>
+                                            <RequireAdmin>
+                                                <ExpertOnly>
+                                                    <Advanced />
+                                                </ExpertOnly>
+                                            </RequireAdmin>
+                                        </ShellRoute>
+                                    }
+                                />
+
+                                {/* Catch-all → home */}
+                                <Route path="*" element={<Navigate to="/" replace />} />
+                            </Routes>
+                        </SettingsProvider>
+                    </AuthProvider>
                 </BrowserRouter>
             </ErrorBoundary>
             <Toaster

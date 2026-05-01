@@ -15,6 +15,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import AggressiveBanner from "@/components/atoms/AggressiveBanner";
+import PublicBanner from "@/components/atoms/PublicBanner";
 
 export default function AppShell({ children }) {
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -54,6 +55,7 @@ export default function AppShell({ children }) {
                     <Menu size={14} />
                 </button>
 
+                <PublicBanner />
                 <AggressiveBanner />
 
                 <TopBar />

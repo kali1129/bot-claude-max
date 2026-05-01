@@ -13,6 +13,7 @@ import { useSettings } from "@/lib/userMode";
 
 import UserModeBadge from "@/components/atoms/UserModeBadge";
 import HaltButton from "@/components/atoms/HaltButton";
+import AuthCorner from "@/components/atoms/AuthCorner";
 
 const fmtMoney = (v) => {
     const n = Number(v);
@@ -164,6 +165,7 @@ export default function TopBar() {
                 <div className="flex items-center gap-2 px-4 border-l border-[var(--border)]">
                     <UserModeBadge compact />
                     <HaltButton compact />
+                    <AuthCorner />
                     <button
                         type="button"
                         onClick={handleRefresh}

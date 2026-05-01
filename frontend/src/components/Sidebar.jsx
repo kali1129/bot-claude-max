@@ -13,23 +13,29 @@ import {
 
 import { apiGet } from "@/lib/api";
 import { useSettings } from "@/lib/userMode";
+import { useAuth } from "@/lib/AuthProvider";
 
 // Cada item declara qué modos lo ven. "Avanzado" solo en experto.
 const NAV_ITEMS = [
-    { to: "/", label: "Inicio", icon: Home, code: "00", modes: ["novato", "experto"] },
-    { to: "/vivo", label: "En Vivo", icon: Activity, code: "01", modes: ["novato", "experto"] },
-    { to: "/operaciones", label: "Operaciones", icon: BookOpenCheck, code: "02", modes: ["novato", "experto"] },
-    { to: "/estrategias", label: "Estrategias", icon: Crosshair, code: "03", modes: ["novato", "experto"] },
-    { to: "/estadisticas", label: "Estadísticas", icon: BarChart3, code: "04", modes: ["novato", "experto"] },
-    { to: "/configuracion", label: "Configuración", icon: Cog, code: "05", modes: ["novato", "experto"] },
-    { to: "/ayuda", label: "Ayuda", icon: LifeBuoy, code: "06", modes: ["novato", "experto"] },
-    { to: "/avanzado", label: "Avanzado", icon: FlaskConical, code: "07", modes: ["experto"] },
+    { to: "/", label: "Inicio", icon: Home, code: "00", modes: ["novato", "experto"], adminOnly: false },
+    { to: "/vivo", label: "En Vivo", icon: Activity, code: "01", modes: ["novato", "experto"], adminOnly: false },
+    { to: "/operaciones", label: "Operaciones", icon: BookOpenCheck, code: "02", modes: ["novato", "experto"], adminOnly: false },
+    { to: "/estrategias", label: "Estrategias", icon: Crosshair, code: "03", modes: ["novato", "experto"], adminOnly: false },
+    { to: "/estadisticas", label: "Estadísticas", icon: BarChart3, code: "04", modes: ["novato", "experto"], adminOnly: false },
+    { to: "/configuracion", label: "Configuración", icon: Cog, code: "05", modes: ["novato", "experto"], adminOnly: true },
+    { to: "/ayuda", label: "Ayuda", icon: LifeBuoy, code: "06", modes: ["novato", "experto"], adminOnly: false },
+    { to: "/avanzado", label: "Avanzado", icon: FlaskConical, code: "07", modes: ["experto"], adminOnly: true },
 ];
 
 export default function Sidebar({ mobile = false, onNavigate }) {
     const { settings } = useSettings();
+    const { isAdmin } = useAuth();
     const mode = settings?.mode || "novato";
-    const visible = NAV_ITEMS.filter((it) => it.modes.includes(mode));
+    const visible = NAV_ITEMS.filter((it) => {
+        if (!it.modes.includes(mode)) return false;
+        if (it.adminOnly && !isAdmin) return false;
+        return true;
+    });
 
     // Bot status check para el header (igual que antes pero usa apiGet)
     const [botAlive, setBotAlive] = useState(null);
