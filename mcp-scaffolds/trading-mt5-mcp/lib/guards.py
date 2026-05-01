@@ -355,7 +355,7 @@ def guard_low_profit_pair(ctx: dict):
 
 GUARDS = [
     guard_sl_tp_required,
-    guard_max_positions,
+    # guard_max_positions,  # DISABLED
     guard_sl_tp_side,
 ]
 

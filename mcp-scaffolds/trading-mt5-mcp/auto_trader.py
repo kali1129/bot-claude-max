@@ -1110,13 +1110,13 @@ def main():
             total_open = len(mt5_positions) + paper_open_n
             open_symbols = {p["symbol"].upper() for p in mt5_positions} | \
                             {p["symbol"].upper() for p in paper_trades}
-            if total_open >= MAX_OPEN_POSITIONS:
-                log.info("max positions hit (%d/%d) — passing",
-                         total_open, MAX_OPEN_POSITIONS)
-                _audit({"iter": iteration, "skip": "MAX_POSITIONS_BOT",
-                        "balance": balance, "open_symbols": list(open_symbols)})
-                _sleep(args.interval)
-                continue
+            # if total_open >= MAX_OPEN_POSITIONS:
+                # log.info("max positions hit (%d/%d) — passing",
+                         # total_open, MAX_OPEN_POSITIONS)
+                # _audit({"iter": iteration, "skip": "MAX_POSITIONS_BOT",
+                        # "balance": balance, "open_symbols": list(open_symbols)})
+                # _sleep(args.interval)
+                # continue
 
             if balance <= 0:
                 log.warning("balance %.2f — nothing to risk", balance)
