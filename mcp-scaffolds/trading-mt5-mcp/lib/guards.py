@@ -355,20 +355,8 @@ def guard_low_profit_pair(ctx: dict):
 
 GUARDS = [
     guard_sl_tp_required,
-    guard_blocked_hour,
     guard_max_positions,
-    guard_consecutive_losses,
-    guard_trades_per_day,
-    guard_daily_dd,
-    guard_lots_cap,
-    guard_rr,
     guard_sl_tp_side,
-    guard_risk_dollars,
-    # Phase 1 guards
-    # guard_correlation,  # DISABLED for test
-    # guard_equity_drawdown,  # DISABLED for test
-    # guard_cooldown_after_losses,  # DISABLED for test
-    # guard_low_profit_pair,  # DISABLED for test
 ]
 
 

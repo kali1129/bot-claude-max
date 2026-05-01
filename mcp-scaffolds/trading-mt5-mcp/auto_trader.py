@@ -1159,24 +1159,22 @@ def main():
 
             # === GLOBAL HARD FILTERS (v3) ===
             # Spread filter: reject if spread eats too much of SL distance
-            _gf_tick = trading.get_tick(best["symbol"])
-            if _gf_tick.get("ok") is not False:
-                _gf_spread = abs(float(_gf_tick.get("ask", 0)) - float(_gf_tick.get("bid", 0)))
-                _gf_sl_dist = abs(best["entry"] - best["sl"])
-                _gf_spread_pct = (_gf_spread / _gf_sl_dist * 100) if _gf_sl_dist > 0 else 999
-                if _gf_spread_pct > MAX_SPREAD_PCT_OF_R:
-                    log.info("SPREAD FILTER: %s %.1f%% > %.0f%% — skip",
-                             best["symbol"], _gf_spread_pct, MAX_SPREAD_PCT_OF_R)
-                    _audit({"iter": iteration, "skip": "SPREAD_TOO_HIGH",
-                            "symbol": best["symbol"], "spread_pct": round(_gf_spread_pct, 1)})
-                    _sleep(args.interval)
-                    continue
-
-            # Session filter: REMOVED — each strategy defines its own trading hours
+            # DISABLED: _gf_tick = trading.get_tick(best["symbol"])
+            # DISABLED: if _gf_tick.get("ok") is not False:
+                # DISABLED: _gf_spread = abs(float(_gf_tick.get("ask", 0)) - float(_gf_tick.get("bid", 0)))
+                # DISABLED: _gf_sl_dist = abs(best["entry"] - best["sl"])
+                # DISABLED: _gf_spread_pct = (_gf_spread / _gf_sl_dist * 100) if _gf_sl_dist > 0 else 999
+                # DISABLED: if _gf_spread_pct > MAX_SPREAD_PCT_OF_R:
+                    # DISABLED: log.info("SPREAD FILTER: %s %.1f%% > %.0f%% — skip",
+                             # DISABLED: best["symbol"], _gf_spread_pct, MAX_SPREAD_PCT_OF_R)
+                    # DISABLED: _audit({"iter": iteration, "skip": "SPREAD_TOO_HIGH",
+                            # DISABLED: "symbol": best["symbol"], "spread_pct": round(_gf_spread_pct, 1)})
+                    # DISABLED: _sleep(args.interval)
+                    # DISABLED: continue
+ # DISABLED:             # Session filter: REMOVED — each strategy defines its own trading hours
             # via strategy.hard_filter() -> base.is_in_trading_hours()
-            _gf_hour = datetime.now(timezone.utc).hour
-
-            # Strategy-specific hard filter (use the strategy that proposed the signal)
+            # DISABLED: _gf_hour = datetime.now(timezone.utc).hour
+ # DISABLED:             # Strategy-specific hard filter (use the strategy that proposed the signal)
             # DISABLED: _hf_strat_id = best.get("strategy_id", "")
             # DISABLED: _active_strat = strat_engine.REGISTRY.get(_hf_strat_id, strat_engine.get_active_strategy())
             # DISABLED: if hasattr(best, 'get') and best.get("extra"):
@@ -1197,8 +1195,7 @@ def main():
                             # DISABLED: "symbol": best["symbol"], "reason": _hf_reason})
                     # DISABLED: _sleep(args.interval)
                     # DISABLED: continue
-
-            # 3. size
+ # DISABLED:             # 3. size
             sym_info = _symbol_size_inputs(best["symbol"])
             if sym_info is None:
                 log.warning("no symbol info for %s — skip", best["symbol"])
