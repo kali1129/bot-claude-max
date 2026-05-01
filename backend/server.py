@@ -489,26 +489,34 @@ class UserSettingsPayload(BaseModel):
 
 @api_router.put("/settings", dependencies=[Depends(require_token)])
 async def put_settings(payload: UserSettingsPayload):
-    """Actualiza settings (merge parcial — solo los campos provistos)."""
+    """Actualiza settings (merge parcial — solo los campos provistos).
+
+    Devuelve el SNAPSHOT completo (no solo la settings bare) para que el
+    frontend pueda actualizar `active_style_preset` y `available_styles`
+    sin un round-trip extra a GET. Sin esto, después de un PUT el contexto
+    quedaba con presets indefinidos y la UI mostraba "— posición(es)" y
+    cards sin valores en risk/RR/max_pos.
+    """
     if not _SHARED_AVAILABLE or _user_settings_mod is None:
         raise HTTPException(503, "shared modules not available")
     current = _user_settings_mod.load()
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
     current.update(updates)
     try:
-        saved = _user_settings_mod.save(current)
+        _user_settings_mod.save(current)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    return {"ok": True, "settings": saved}
+    return {"ok": True, "settings": _user_settings_mod.snapshot()}
 
 
 @api_router.post("/settings/onboarding/complete",
                   dependencies=[Depends(require_token)])
 async def post_onboarding_complete():
-    """Marca el wizard como completado."""
+    """Marca el wizard como completado. Devuelve snapshot completo."""
     if not _SHARED_AVAILABLE or _user_settings_mod is None:
         raise HTTPException(503, "shared modules not available")
-    return {"ok": True, "settings": _user_settings_mod.mark_onboarded()}
+    _user_settings_mod.mark_onboarded()
+    return {"ok": True, "settings": _user_settings_mod.snapshot()}
 
 
 @api_router.get("/settings/styles")
@@ -536,8 +544,8 @@ class TelegramChatPayload(BaseModel):
 async def post_telegram_add(payload: TelegramChatPayload):
     if not _SHARED_AVAILABLE or _user_settings_mod is None:
         raise HTTPException(503, "shared modules not available")
-    return {"ok": True,
-            "settings": _user_settings_mod.add_telegram_chat(payload.chat_id)}
+    _user_settings_mod.add_telegram_chat(payload.chat_id)
+    return {"ok": True, "settings": _user_settings_mod.snapshot()}
 
 
 @api_router.post("/settings/telegram/remove",
@@ -545,8 +553,8 @@ async def post_telegram_add(payload: TelegramChatPayload):
 async def post_telegram_remove(payload: TelegramChatPayload):
     if not _SHARED_AVAILABLE or _user_settings_mod is None:
         raise HTTPException(503, "shared modules not available")
-    return {"ok": True,
-            "settings": _user_settings_mod.remove_telegram_chat(payload.chat_id)}
+    _user_settings_mod.remove_telegram_chat(payload.chat_id)
+    return {"ok": True, "settings": _user_settings_mod.snapshot()}
 
 
 @api_router.get("/plan/data")

@@ -24,11 +24,28 @@ export function SettingsProvider({ children }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
+    // Helper: extrae el snapshot de settings del payload del backend.
+    // GET /api/settings devuelve el snapshot directo.
+    // PUT /api/settings devuelve {ok, settings: {...}}.
+    // POST /api/settings/onboarding/complete devuelve {ok, settings}.
+    // POST /api/settings/telegram/add|remove devuelve {ok, settings}.
+    // Esta función absorbe ambas formas — si hay `data.settings` la usa,
+    // sino asume que `data` ES el snapshot. Sin esto, después de un PUT
+    // todo el contexto quedaba con `{ok: true, settings: {...}}` como
+    // settings, perdiéndose `style`, `sessions`, etc., y la UI mostraba
+    // las cards SIN selección activa (active siempre false).
+    const _extract = (data) => {
+        if (data && typeof data === "object" && data.settings && data.ok !== false) {
+            return data.settings;
+        }
+        return data;
+    };
+
     const refresh = useCallback(async () => {
         try {
             setError(null);
             const res = await apiGet("/settings");
-            setSettings(res.data);
+            setSettings(_extract(res.data));
         } catch (e) {
             // Si el backend está caído, el dashboard sigue funcionando con
             // valores por defecto novato. No reventamos toda la UI.
@@ -50,8 +67,9 @@ export function SettingsProvider({ children }) {
             setSettings((prev) => ({ ...(prev || {}), ...patch }));
             try {
                 const res = await apiPut("/settings", patch);
-                setSettings(res.data);
-                return res.data;
+                const fresh = _extract(res.data);
+                setSettings(fresh);
+                return fresh;
             } catch (e) {
                 console.error("settings update error", e);
                 // Re-fetch para volver al estado server
