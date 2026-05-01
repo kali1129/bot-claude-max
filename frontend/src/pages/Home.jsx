@@ -35,7 +35,7 @@ import HaltButton from "@/components/atoms/HaltButton";
 import NovatoTooltip from "@/components/atoms/NovatoTooltip";
 
 const TICK_MS = 4000;
-const MAX_SAMPLES = 120;
+const MAX_SAMPLES = 1000;       // ~hasta 24h cuando se siembra de /api/equity/samples
 
 const fmtMoney = (v, fr = 2) =>
     typeof v === "number" && Number.isFinite(v)
@@ -55,6 +55,30 @@ export default function Home() {
     const [capital, setCapital] = useState(null);
     const [equitySamples, setEquitySamples] = useState([]);
     const [loading, setLoading] = useState(true);
+
+    // Sembrar el chart con samples persistidas en disco (24h por default).
+    // Sin esto, cada vez que el usuario abre la pestaña el chart arranca
+    // desde cero. El backend tiene un thread que escribe samples cada 30s
+    // a state/equity_samples.jsonl.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const r = await apiGet("/equity/samples?hours=24&max_n=500");
+                if (cancelled) return;
+                if (r.data?.ok && Array.isArray(r.data.samples)) {
+                    const seeded = r.data.samples.map((s) => ({
+                        t: new Date(s.ts).getTime(),
+                        equity: typeof s.equity === "number" ? s.equity : s.balance,
+                    }));
+                    setEquitySamples(seeded);
+                }
+            } catch {
+                // silent — chart cae a modo solo-memoria
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
 
     const refresh = useCallback(async () => {
         try {
@@ -163,7 +187,18 @@ export default function Home() {
                                                 {fmtMoney(Math.abs(todayPnl))} ({fmtPct(todayPct)})
                                             </div>
                                             <span className="text-[var(--text-faint)] text-xs font-mono">
-                                                hoy · saldo cerrado: {fmtMoney(balance)}
+                                                {(() => {
+                                                    // Sublabel basado en el primer sample persistido
+                                                    const firstTs = equitySamples[0]?.t;
+                                                    if (!firstTs) return `hoy · saldo cerrado: ${fmtMoney(balance)}`;
+                                                    const ageMs = Date.now() - firstTs;
+                                                    const ageH = ageMs / 3_600_000;
+                                                    let label;
+                                                    if (ageH < 1) label = `desde hace ${Math.max(1, Math.round(ageMs / 60_000))} min`;
+                                                    else if (ageH < 24) label = `desde hace ${ageH.toFixed(1)} h`;
+                                                    else label = `desde hace ${(ageH / 24).toFixed(1)} días`;
+                                                    return `${label} · saldo cerrado: ${fmtMoney(balance)}`;
+                                                })()}
                                             </span>
                                         </div>
                                     </div>
