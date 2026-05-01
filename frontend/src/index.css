@@ -17,6 +17,15 @@
     --red: #ef4444;
     --amber: #f59e0b;
     --blue: #3b82f6;
+
+    /* Nuevos para modo agresivo + UX novato */
+    --warn: #f59e0b;
+    --warn-bg: rgba(245, 158, 11, 0.10);
+    --danger-strong: #b91c1c;
+    --novato-accent: #8b5cf6;
+    --novato-bg: rgba(139, 92, 246, 0.08);
+    --success-soft: rgba(52, 211, 153, 0.12);
+    --sidebar-w: 240px;
 }
 
 * {
@@ -258,7 +267,64 @@ section {
 
 /* Mobile sidebar hide */
 @media (max-width: 1023px) {
-    .sidebar-nav {
+    .sidebar-nav.lg-only {
         display: none;
     }
+}
+
+/* Botones grandes para novato */
+.btn-xl {
+    padding: 16px 32px;
+    font-size: 14px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 600;
+}
+
+/* Banner persistente modo agresivo */
+.banner-warn {
+    background: var(--warn-bg);
+    border-top: 2px solid var(--warn);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px;
+}
+
+/* Tooltip-hint visual para novato */
+.tooltip-novato {
+    color: var(--novato-accent);
+    border-bottom: 1px dotted currentColor;
+    cursor: help;
+}
+
+/* Skeleton placeholder */
+.skeleton {
+    background: linear-gradient(
+        90deg,
+        var(--surface),
+        var(--surface-2),
+        var(--surface)
+    );
+    background-size: 200% 100%;
+    animation: skeleton-loading 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-loading {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+/* Card "soft" para novato — borders más suaves, padding más generoso */
+.panel-soft {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px;
+    transition: border-color 0.2s ease;
+}
+.panel-soft:hover {
+    border-color: var(--border-strong);
 }

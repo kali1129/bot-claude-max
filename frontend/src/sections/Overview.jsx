@@ -24,12 +24,12 @@ function MetricBig({ label, value, sublabel, color = "white", testId }) {
     );
 }
 
-export default function Overview({ config, stats }) {
+export default function Overview({ config, stats, goalUsd }) {
     const liveBalance = config.capital;             // dynamic from MT5 (or fallback)
-    // Plan target: the long-term capital goal (default 4× starting capital
-    // or $800 if neither is known). Used only as the headline number; the
-    // dashboard's Live tab uses real-time balance for everything else.
-    const target = config.capital_target ?? Math.max(800, Math.round((liveBalance || 200) * 4));
+    // Plan target: lee primero goal_usd del user_settings (passed via prop), o
+    // capital_target del backend, o un fallback razonable. NUNCA usamos 800
+    // hardcoded — eso era de la spec original y confunde a nuevos usuarios.
+    const target = goalUsd ?? config.capital_target ?? null;
     const isLive = config.capital_source === "mt5";
     const equity = stats?.current_equity ?? liveBalance;
     const totalPnl = stats?.total_pnl_usd ?? 0;
@@ -55,7 +55,9 @@ export default function Overview({ config, stats }) {
                         <h1 className="font-display text-4xl md:text-5xl font-black tracking-tight">
                             Plan de Trading
                             <br />
-                            <span className="text-[var(--text-dim)]">${liveBalance?.toFixed?.(0) ?? "—"} → ${target}</span>{" "}
+                            <span className="text-[var(--text-dim)]">
+                                ${liveBalance?.toFixed?.(0) ?? "—"} → {target ? `$${target}` : "—"}
+                            </span>{" "}
                             <span className="text-[var(--green)]">.</span>
                         </h1>
                         <p className="mt-4 text-[var(--text-dim)] max-w-[640px] text-[15px] leading-relaxed">
@@ -88,8 +90,8 @@ export default function Overview({ config, stats }) {
                         <AlertTriangle size={16} className="text-[var(--amber)]" />
                         <span className="font-mono text-xs text-[var(--text-dim)]">
                             MetaTrader no está conectado. Mostrando capital de
-                            referencia (${target}). Abre tu MT5 y los números pasan
-                            a ser en vivo.
+                            referencia{target ? ` ($${target})` : ""}. Abre tu MT5 y los números
+                            pasan a ser en vivo.
                         </span>
                     </div>
                 )}
@@ -99,7 +101,13 @@ export default function Overview({ config, stats }) {
                     <MetricBig
                         label="Capital de la cuenta"
                         value={fmtMoney(liveBalance)}
-                        sublabel={isLive ? "en vivo desde MT5" : `objetivo $${target}`}
+                        sublabel={
+                            isLive
+                                ? "en vivo desde MT5"
+                                : target
+                                ? `objetivo $${target}`
+                                : "definí tu meta en Configuración"
+                        }
                         color={isLive ? "white" : "amber"}
                         testId="metric-capital"
                     />

@@ -11,7 +11,7 @@
  * Data comes from polling four backend endpoints every 3s — no websockets,
  * dumb-simple, robust against backend restarts.
  */
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import {
     LineChart,
@@ -22,10 +22,10 @@ import {
     ReferenceLine,
 } from "recharts";
 import { Cpu, Wallet, ShieldCheck, AlertTriangle, Pause, Radio, Activity,  } from "lucide-react";
+import { apiGet } from "@/lib/api";
 
 const TICK_MS = 3000;
 const MAX_SAMPLES = 200;          // ~10 min at 3s/sample
-const STARTING_BALANCE_HINT = 200; // shown only as initial baseline if unknown
 
 const fmtMoney = (v, fr = 2) =>
     typeof v === "number" && Number.isFinite(v)
@@ -55,7 +55,7 @@ const timeAgo = (iso) => {
 // --------------------------------------------------------------------------
 // EquityHero — big number + sparkline
 // --------------------------------------------------------------------------
-function EquityHero({ samples, balance, equity, todayPct }) {
+function EquityHero({ samples, balance, equity, todayPct, dailyCapPct }) {
     const baseline = samples.length > 0 ? samples[0].equity : balance;
     const latest = equity ?? baseline;
     const change = latest - baseline;
@@ -95,7 +95,7 @@ function EquityHero({ samples, balance, equity, todayPct }) {
                         {fmtPct(todayPct)}
                     </div>
                     <div className="kicker mt-1 text-[var(--text-faint)]">
-                        cap diario: -3%
+                        cap diario: -{dailyCapPct ?? 3}%
                     </div>
                 </div>
             </div>
@@ -108,10 +108,16 @@ function EquityHero({ samples, balance, equity, todayPct }) {
                                         stroke="rgba(255,255,255,0.2)"
                                         strokeDasharray="3 3" />
                         <Tooltip
+                            wrapperStyle={{
+                                outline: "none",
+                                fontSize: 11,
+                                fontFamily: "monospace",
+                            }}
                             contentStyle={{
                                 background: "rgba(0,0,0,0.85)",
                                 border: "1px solid rgba(255,255,255,0.15)",
-                                fontSize: 11, fontFamily: "monospace",
+                                fontSize: 11,
+                                fontFamily: "monospace",
                             }}
                             formatter={(v) => [fmtMoney(v), "equity"]}
                             labelFormatter={() => ""}
@@ -134,7 +140,7 @@ function EquityHero({ samples, balance, equity, todayPct }) {
 // --------------------------------------------------------------------------
 // PositionVisual — price scale showing SL ─ entry ─ current ─ TP
 // --------------------------------------------------------------------------
-function PositionVisual({ position }) {
+function PositionVisual({ position, novato = false }) {
     if (!position) {
         return (
             <div className="panel p-5" data-testid="position-empty">
@@ -181,7 +187,9 @@ function PositionVisual({ position }) {
                         ? "border-[var(--green)] text-[var(--green-bright)]"
                         : "border-[var(--red)] text-[var(--red)]"
                 }`}>
-                    {side === "buy" ? "COMPRA" : "VENTA"} · {lots} lots
+                    {side === "buy" ? "COMPRA" : "VENTA"} · {novato
+                        ? (lots <= 0.05 ? "tamaño chico" : lots <= 0.5 ? "tamaño medio" : "tamaño grande")
+                        : `${lots} lots`}
                 </div>
             </div>
 
@@ -189,9 +197,11 @@ function PositionVisual({ position }) {
                 positivePnL ? "text-[var(--green-bright)]" : "text-[var(--red)]"
             }`}>
                 {positivePnL ? "+" : ""}{fmtMoney(profit_usd)}
-                <span className="text-sm font-mono ml-2 text-[var(--text-faint)]">
-                    {rProgress >= 0 ? "+" : ""}{rProgress.toFixed(2)}R
-                </span>
+                {!novato && (
+                    <span className="text-sm font-mono ml-2 text-[var(--text-faint)]">
+                        {rProgress >= 0 ? "+" : ""}{rProgress.toFixed(2)}R
+                    </span>
+                )}
             </div>
 
             {/* Price scale */}
@@ -224,17 +234,19 @@ function PositionVisual({ position }) {
                      style={{ left: `${pct(tp)}%` }} />
             </div>
 
-            <div className="mt-7 grid grid-cols-3 gap-3 text-[11px] font-mono">
+            <div className={`mt-7 grid ${novato ? "grid-cols-2" : "grid-cols-3"} gap-3 text-[11px] font-mono`}>
                 <div>
                     <div className="kicker text-[var(--text-faint)]">precio</div>
                     <div className="tabular text-white">{current}</div>
                 </div>
-                <div>
-                    <div className="kicker text-[var(--text-faint)]">R progress</div>
-                    <div className={`tabular ${rProgress >= 1 ? "text-[var(--green-bright)]" : "text-[var(--text)]"}`}>
-                        {rProgress >= 1 ? "🔒 BE locked" : `${rProgress.toFixed(2)}R / 1.00R`}
+                {!novato && (
+                    <div>
+                        <div className="kicker text-[var(--text-faint)]">R progress</div>
+                        <div className={`tabular ${rProgress >= 1 ? "text-[var(--green-bright)]" : "text-[var(--text)]"}`}>
+                            {rProgress >= 1 ? "🔒 BE locked" : `${rProgress.toFixed(2)}R / 1.00R`}
+                        </div>
                     </div>
-                </div>
+                )}
                 <div>
                     <div className="kicker text-[var(--text-faint)]">a TP</div>
                     <div className="tabular text-[var(--green)]">
@@ -417,30 +429,38 @@ function DisciplineCard({ discipline }) {
 // --------------------------------------------------------------------------
 // Main
 // --------------------------------------------------------------------------
-export default function LiveDashboard({ api }) {
+export default function LiveDashboard({ api, novato = false, dailyCapPct }) {
     const [mt5, setMt5] = useState(null);
     const [procs, setProcs] = useState({});
     const [lastScan, setLastScan] = useState(null);
     const [lastIterTs, setLastIterTs] = useState(null);
     const [discipline, setDiscipline] = useState(null);
-    const samples = useRef([]);          // [{t, equity}] ring buffer
+    const [capital, setCapital] = useState(null);
+    // useState (no useRef) para que React re-renderice cuando llegan nuevos
+    // samples — antes se quedaba quieto el sparkline porque samples era un
+    // ref mutable.
+    const [samples, setSamples] = useState([]);
 
     const refresh = useCallback(async () => {
         try {
-            const [m, pl, bs, dc] = await Promise.allSettled([
+            const [m, pl, bs, dc, cap] = await Promise.allSettled([
                 axios.get(`${api}/mt5/status`),
                 axios.get(`${api}/process/list`),
                 axios.get(`${api}/bot/status`),
                 axios.get(`${api}/discipline/score?window=30`),
+                apiGet("/capital"),
             ]);
             if (m.status === "fulfilled") {
                 setMt5(m.value.data);
                 const eq = m.value.data?.account?.equity;
                 if (typeof eq === "number" && Number.isFinite(eq)) {
-                    samples.current.push({ t: Date.now(), equity: eq });
-                    if (samples.current.length > MAX_SAMPLES) {
-                        samples.current.splice(0, samples.current.length - MAX_SAMPLES);
-                    }
+                    setSamples((prev) => {
+                        const next = [...prev, { t: Date.now(), equity: eq }];
+                        if (next.length > MAX_SAMPLES) {
+                            return next.slice(next.length - MAX_SAMPLES);
+                        }
+                        return next;
+                    });
                 }
             }
             if (pl.status === "fulfilled") {
@@ -455,6 +475,9 @@ export default function LiveDashboard({ api }) {
             if (dc.status === "fulfilled") {
                 setDiscipline(dc.value.data);
             }
+            if (cap.status === "fulfilled") {
+                setCapital(cap.value.data);
+            }
         } catch {
             // silent — show stale data
         }
@@ -468,7 +491,9 @@ export default function LiveDashboard({ api }) {
 
     const acc = mt5?.account || {};
     const today = mt5?.today || {};
-    const balance = acc.balance ?? STARTING_BALANCE_HINT;
+    // Antes hardcodeaba 200 como starting balance hint. Ahora preferimos el
+    // valor real desde /api/capital si está disponible.
+    const balance = acc.balance ?? capital?.starting_balance_usd ?? capital?.current_capital_usd ?? 0;
     const equity = acc.equity ?? balance;
     const positions = mt5?.open_positions || [];
     const activePos = positions[0] || null;
@@ -496,22 +521,23 @@ export default function LiveDashboard({ api }) {
                 {/* TOP ROW: equity hero (2 cols) + position visual (1 col) */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
                     <EquityHero
-                        samples={samples.current}
+                        samples={samples}
                         balance={balance}
                         equity={equity}
                         todayPct={today.total_pl_pct ?? 0}
+                        dailyCapPct={dailyCapPct}
                     />
-                    <PositionVisual position={activePos} />
+                    <PositionVisual position={activePos} novato={novato} />
                 </div>
 
-                {/* SECOND ROW: bot heartbeat + discipline */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* SECOND ROW: bot heartbeat + (en experto) discipline */}
+                <div className={`grid grid-cols-1 ${novato ? "" : "md:grid-cols-2"} gap-4`}>
                     <BotHeartbeat
                         procs={procs}
                         lastScan={lastScan}
                         lastIterTs={lastIterTs}
                     />
-                    <DisciplineCard discipline={discipline} />
+                    {!novato && <DisciplineCard discipline={discipline} />}
                 </div>
             </div>
         </section>

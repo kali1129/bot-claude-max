@@ -287,7 +287,10 @@ function PerformanceSummary({ strategies }) {
 // --------------------------------------------------------------------------
 // Strategies — main exported component
 // --------------------------------------------------------------------------
-export default function Strategies({ api }) {
+export default function Strategies({ api, novato = false }) {
+    // novato: actualmente Strategies muestra todo. La página wrapper agrega
+    // banner explicativo en novato. Aquí podríamos ocultar params crudos en
+    // un futuro pase — por ahora basta con el wrapper externo.
     const [strategies, setStrategies] = useState([]);
     const [activeId, setActiveId] = useState(null);
     const [loading, setLoading] = useState(true);

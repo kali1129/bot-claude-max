@@ -356,7 +356,11 @@ export default function Backtest({ api }) {
                         </div>
                         <EquityCurveWithDD
                             data={result.equity_curve}
-                            initialBalance={result.config?.initial_balance || 800}
+                            initialBalance={
+                                result.config?.initial_balance ??
+                                result.equity_curve?.[0]?.equity ??
+                                0
+                            }
                         />
                     </div>
 

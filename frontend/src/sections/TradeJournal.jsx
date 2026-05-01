@@ -128,15 +128,15 @@ export default function TradeJournal({ api, strategies, stats, onMutated }) {
             <div className="max-w-[1400px] mx-auto">
                 <div className="mb-8 flex items-end justify-between flex-wrap gap-4">
                     <div>
-                        <div className="kicker mb-2">SECTION 08 / JOURNAL</div>
+                        <div className="kicker mb-2">SECCIÓN 08 / DIARIO</div>
                         <h2 className="font-display text-3xl md:text-4xl font-black tracking-tight">
-                            Trade journal
+                            Diario de Operaciones
                             <span className="text-[var(--green)]">.</span>
                         </h2>
                         <p className="mt-3 text-[var(--text-dim)] max-w-[640px] leading-relaxed">
-                            Cada trade se registra. Sin journal no hay edge.
-                            Anota razón, screenshot y aprendizaje. La equity curve
-                            se actualiza al cerrar.
+                            Cada operación se registra. Sin diario no hay edge.
+                            Anotá la razón, el screenshot y lo que aprendiste. La
+                            curva de capital se actualiza al cerrar.
                         </p>
                     </div>
                     <button

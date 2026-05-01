@@ -34,7 +34,7 @@ const TABS = [
 ];
 
 // ── Histogram Chart ──────────────────────────────────────────────
-function Histogram({ data, label }) {
+function Histogram({ data, label, profitableThreshold = 0 }) {
     if (!data || data.length === 0) return null;
     const maxCount = Math.max(...data.map((d) => d.count), 1);
 
@@ -44,7 +44,10 @@ function Histogram({ data, label }) {
             <div className="flex items-end gap-0.5" style={{ height: 100 }}>
                 {data.map((bin, i) => {
                     const h = (bin.count / maxCount) * 100;
-                    const isProfitable = bin.bin_start >= 800;
+                    // Antes hardcodeaba 800 (capital inicial original). Ahora
+                    // depende del threshold pasado por prop — el caller le pasa
+                    // el initial_balance del backtest.
+                    const isProfitable = bin.bin_start >= profitableThreshold;
                     return (
                         <div
                             key={i}
@@ -415,7 +418,7 @@ function MonteCarloTab({ api }) {
                         </div>
                         <div className="panel p-3 text-center">
                             <div className="text-[9px] text-[var(--text-faint)] uppercase font-mono">Balance Mediano</div>
-                            <div className="font-display text-xl font-black" style={{ color: fb.p50 >= 800 ? "var(--green)" : "var(--red)" }}>
+                            <div className="font-display text-xl font-black" style={{ color: fb.p50 >= (result.initial_balance ?? 0) ? "var(--green)" : "var(--red)" }}>
                                 ${fb.p50?.toFixed(0)}
                             </div>
                         </div>
@@ -434,7 +437,7 @@ function MonteCarloTab({ api }) {
                             {[5, 10, 25, 50, 75, 90, 95].map((p) => (
                                 <div key={p}>
                                     <div className="text-[9px] text-[var(--text-faint)] font-mono">P{p}</div>
-                                    <div className="font-mono text-sm font-semibold" style={{ color: (fb[`p${p}`] || 0) >= 800 ? "var(--green)" : "var(--red)" }}>
+                                    <div className="font-mono text-sm font-semibold" style={{ color: (fb[`p${p}`] || 0) >= (result.initial_balance ?? 0) ? "var(--green)" : "var(--red)" }}>
                                         ${(fb[`p${p}`] || 0).toFixed(0)}
                                     </div>
                                 </div>
