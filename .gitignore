@@ -103,3 +103,8 @@ mcp-scaffolds/*/last_scan.json
 mcp-scaffolds/*/sync.json
 mcp-scaffolds/*/.*.pid
 mcp-scaffolds/*/.venv/
+
+# Deploy backups (created by deploy-frontend script)
+frontend/src.prev/
+frontend/build.prev/
+frontend/build/
