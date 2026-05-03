@@ -308,11 +308,13 @@ export default function Admin() {
                                                                 <td className="px-2 py-2.5">
                                                     {(u.broker_accounts && u.broker_accounts.length > 0) ? (
                                                         <div className="flex flex-col gap-0.5">
-                                                            {u.broker_accounts.map((a) => (
+                                                            {[...u.broker_accounts]
+                                                                .sort((a, b) => (a.is_demo === b.is_demo ? 0 : a.is_demo ? -1 : 1))
+                                                                .map((a) => (
                                                                 <div
                                                                     key={a.id || `${a.is_demo}_${a.mt5_login}`}
                                                                     className="flex items-center gap-1 text-[10px]"
-                                                                    title={`${a.is_demo ? "DEMO" : "REAL"} · ${a.mt5_server}`}
+                                                                    title={`${a.is_demo ? "DEMO" : "REAL"} · ${a.mt5_server}${a.is_active ? " · ACTIVA (bot usa esta)" : ""}`}
                                                                 >
                                                                     <span
                                                                         className="kicker"
@@ -324,7 +326,11 @@ export default function Admin() {
                                                                     >
                                                                         {a.is_active ? "★" : "○"}
                                                                     </span>
+                                                                    <span style={{ fontSize: "11px" }}>
+                                                                        {a.is_demo ? "📊" : "💰"}
+                                                                    </span>
                                                                     <span
+                                                                        className="font-bold"
                                                                         style={{
                                                                             color: a.is_demo
                                                                                 ? "var(--blue)"
@@ -336,6 +342,11 @@ export default function Admin() {
                                                                     <span className="text-[9px] text-[var(--text-faint)]">
                                                                         {a.mt5_login}
                                                                     </span>
+                                                                    {!a.is_demo ? (
+                                                                        <span className="text-[8px] text-[var(--amber)]" title="Esta cuenta opera con dinero real">
+                                                                            ⚠
+                                                                        </span>
+                                                                    ) : null}
                                                                 </div>
                                                             ))}
                                                         </div>
@@ -344,7 +355,7 @@ export default function Admin() {
                                                         <div className="flex items-center gap-1">
                                                             <span className="kicker text-[var(--green-bright)]">●</span>
                                                             <span className="text-[10px]">
-                                                                {u.broker_login} · {u.broker_demo ? "DEMO" : "REAL"}
+                                                                {u.broker_demo ? "📊 DEMO" : "💰 REAL"} {u.broker_login}
                                                             </span>
                                                         </div>
                                                     ) : (
