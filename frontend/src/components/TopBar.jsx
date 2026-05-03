@@ -1,10 +1,9 @@
 // TopBar — sticky header global.
 //
-// Mejoras vs versión anterior:
-//   · TICKER_ITEMS dinámico (lee user_settings.active_style_preset)
-//   · UserModeBadge + HaltButton siempre visibles
-//   · Polling con apiGet (sin axios pelado en cada componente)
-//   · Title-case consistente (UTC, Equity, P&L de hoy, Posiciones, Estado)
+// v3.2 (multi-cuenta): la barra de equity/P&L solo muestra datos REALES
+// para admin (su MT5). Para users no-admin, muestra placeholders y el
+// estado de SU bot personal. Anónimos ven la barra del admin (preview
+// público).
 
 import { useEffect, useState } from "react";
 import { RefreshCcw } from "lucide-react";
@@ -25,7 +24,7 @@ const fmtPct = (v) => {
     return Number.isFinite(n) ? `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` : "—";
 };
 
-function StatCell({ label, value, accent = "white", testId }) {
+function StatCell({ label, value, accent = "white", testId, sublabel }) {
     const color =
         accent === "green"
             ? "text-[var(--green-bright)]"
@@ -43,6 +42,11 @@ function StatCell({ label, value, accent = "white", testId }) {
             >
                 {value}
             </div>
+            {sublabel ? (
+                <div className="text-[9px] text-[var(--text-faint)] font-mono mt-0.5 truncate">
+                    {sublabel}
+                </div>
+            ) : null}
         </div>
     );
 }
@@ -50,11 +54,14 @@ function StatCell({ label, value, accent = "white", testId }) {
 export default function TopBar() {
     const { settings } = useSettings();
     const preset = settings?.active_style_preset || {};
-    const { isAdmin } = useAuth();
+    const { isAdmin, isAuthenticated } = useAuth();
 
     const [time, setTime] = useState(new Date());
     const [mt5, setMt5] = useState(null);
     const [botAlive, setBotAlive] = useState(null);
+    // Per-user: su broker activo + estado de SU bot
+    const [userBroker, setUserBroker] = useState(null);
+    const [userBot, setUserBot] = useState(null);
     const [refreshing, setRefreshing] = useState(false);
 
     useEffect(() => {
@@ -64,6 +71,7 @@ export default function TopBar() {
 
     const fetchAll = async () => {
         try {
+            // Datos del admin (siempre, para admin / anon preview)
             const [m, p] = await Promise.allSettled([
                 apiGet("/mt5/status", { timeout: 3000 }),
                 apiGet("/process/list", { timeout: 3000 }),
@@ -75,6 +83,15 @@ export default function TopBar() {
                 );
                 setBotAlive(!!at?.alive);
             }
+            // Datos del user logueado (no admin)
+            if (isAuthenticated && !isAdmin) {
+                const [b, bot] = await Promise.allSettled([
+                    apiGet("/users/me/broker", { timeout: 3000 }),
+                    apiGet("/users/me/bot", { timeout: 3000 }),
+                ]);
+                if (b.status === "fulfilled") setUserBroker(b.value.data);
+                if (bot.status === "fulfilled") setUserBot(bot.value.data);
+            }
         } catch {
             // silent
         }
@@ -84,10 +101,123 @@ export default function TopBar() {
         fetchAll();
         const id = setInterval(fetchAll, 4000);
         return () => clearInterval(id);
-    }, []);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isAdmin, isAuthenticated]);
 
     const utcTime = time.toUTCString().slice(17, 25);
+    const isUserView = isAuthenticated && !isAdmin;
 
+    // Ticker dinámico: lee del preset activo
+    const tickerItems = buildTickerItems(preset, settings?.style);
+
+    const handleRefresh = async () => {
+        setRefreshing(true);
+        await fetchAll();
+        setTimeout(() => setRefreshing(false), 400);
+    };
+
+    // ─── RENDER: USER NO-ADMIN VIEW ───
+    if (isUserView) {
+        const active = userBroker?.active;
+        const hasActive = !!active;
+        const userBotRunning = !!userBot?.running;
+        let stateLabel, stateAccent, stateSub;
+        if (!hasActive) {
+            stateLabel = "Sin Broker";
+            stateAccent = "amber";
+            stateSub = "conectá tu cuenta";
+        } else if (!userBotRunning) {
+            stateLabel = "Detenido";
+            stateAccent = "amber";
+            stateSub = "presioná Iniciar bot";
+        } else {
+            stateLabel = "Activo";
+            stateAccent = "green";
+            stateSub = userBot?.is_admin ? "sin trial" : userBot?.is_paid ? "pago" : "trial 24h";
+        }
+
+        return (
+            <header className="sticky top-0 z-20 panel border-l-0 border-r-0 border-t-0" data-testid="topbar">
+                <div className="flex items-stretch overflow-x-auto">
+                    <StatCell label="UTC" value={utcTime} testId="utc-time" />
+                    <StatCell
+                        label="Tu cuenta"
+                        value={hasActive
+                            ? (active.is_demo ? "📊 DEMO" : "💰 REAL")
+                            : "—"}
+                        sublabel={hasActive ? `login ${active.mt5_login}` : "no conectada"}
+                        accent={hasActive ? (active.is_demo ? "white" : "amber") : "amber"}
+                        testId="user-account"
+                    />
+                    <StatCell
+                        label="Equity"
+                        value={hasActive ? "—" : "—"}
+                        sublabel={hasActive ? "datos en vivo en tu broker" : ""}
+                        accent="white"
+                        testId="equity-value"
+                    />
+                    <StatCell
+                        label="P&L de hoy"
+                        value="—"
+                        sublabel={hasActive ? "consultá tu MT5" : ""}
+                        accent="white"
+                        testId="today-pnl"
+                    />
+                    <StatCell
+                        label="Estado del bot"
+                        value={stateLabel}
+                        sublabel={stateSub}
+                        accent={stateAccent}
+                        testId="trade-status"
+                    />
+                    <div className="flex-1" />
+                    <div className="flex items-center gap-2 px-4 border-l border-[var(--border)]">
+                        <AuthCorner />
+                        <button
+                            type="button"
+                            onClick={handleRefresh}
+                            className="btn-sharp"
+                            data-testid="refresh-stats-btn"
+                            title="Refrescar"
+                            aria-label="Refrescar datos"
+                            disabled={refreshing}
+                        >
+                            <RefreshCcw size={12} className={refreshing ? "animate-spin" : ""} />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Banner explicativo */}
+                <div
+                    className="border-t border-[var(--border)] px-4 py-1.5 text-[10px] font-mono"
+                    style={{ background: "rgba(59,130,246,0.05)" }}
+                >
+                    <span className="text-[var(--blue)]">ℹ</span>{" "}
+                    <span className="text-[var(--text-dim)]">
+                        Tu cuenta está {hasActive ? "conectada" : "sin conectar"}.
+                        El equity y P&L en vivo los ves directo en tu app MT5
+                        (acá sólo configurás el bot que opera por vos).
+                    </span>
+                </div>
+
+                {/* Ticker */}
+                <div className="border-t border-[var(--border)] overflow-hidden bg-[var(--bg)]">
+                    <div className="ticker-track flex gap-12 py-1.5 px-4">
+                        {[...tickerItems, ...tickerItems].map((it, i) => (
+                            <span
+                                key={i}
+                                className="kicker text-[var(--text-dim)] whitespace-nowrap"
+                            >
+                                <span className="text-[var(--green)]">›</span> {it}
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            </header>
+        );
+    }
+
+    // ─── RENDER: ADMIN o ANÓNIMO VIEW (admin's MT5 = preview público) ───
     const acc = mt5?.account;
     const today = mt5?.today;
     const equity = acc?.equity ?? 0;
@@ -116,21 +246,8 @@ export default function TopBar() {
         stateAccent = "green";
     }
 
-    // Ticker dinámico: lee del preset activo (si existe), si no, frases genéricas
-    const tickerItems = buildTickerItems(preset, settings?.style);
-
-    const handleRefresh = async () => {
-        setRefreshing(true);
-        await fetchAll();
-        setTimeout(() => setRefreshing(false), 400);
-    };
-
     return (
-        <header
-            className="sticky top-0 z-20 panel border-l-0 border-r-0 border-t-0"
-            data-testid="topbar"
-        >
-            {/* Stat strip */}
+        <header className="sticky top-0 z-20 panel border-l-0 border-r-0 border-t-0" data-testid="topbar">
             <div className="flex items-stretch overflow-x-auto">
                 <StatCell label="UTC" value={utcTime} testId="utc-time" />
                 <StatCell
@@ -165,11 +282,7 @@ export default function TopBar() {
                 />
                 <div className="flex-1" />
                 <div className="flex items-center gap-2 px-4 border-l border-[var(--border)]">
-                    {/* UserModeBadge cambia settings GLOBALES — solo admin
-                        puede modificar. Los no-admins ven su mode actual
-                        en el badge AuthCorner si están logueados. */}
                     {isAdmin ? <UserModeBadge compact /> : null}
-                    {/* HaltButton apaga el bot del admin. SOLO admin. */}
                     {isAdmin ? <HaltButton compact /> : null}
                     <AuthCorner />
                     <button
@@ -186,7 +299,6 @@ export default function TopBar() {
                 </div>
             </div>
 
-            {/* Ticker */}
             <div className="border-t border-[var(--border)] overflow-hidden bg-[var(--bg)]">
                 <div className="ticker-track flex gap-12 py-1.5 px-4">
                     {[...tickerItems, ...tickerItems].map((it, i) => (

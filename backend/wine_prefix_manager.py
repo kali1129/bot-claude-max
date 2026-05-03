@@ -176,15 +176,28 @@ async def clone_for_user(user_id: str) -> dict:
         state_path(user_id).mkdir(parents=True, exist_ok=True)
         logs_path(user_id).mkdir(parents=True, exist_ok=True)
 
-        # cp -r del template al prefix del usuario (pesado, 2-3 GB)
+        # Clone template al prefix del user. CRÍTICO: preservar symlinks.
+        # El template tiene dosdevices/z: → / (symlink al rootfs Linux). Si
+        # lo seguimos, copytree copia TODO el rootfs (~80 GB) dentro del
+        # prefix del user. Ya pasó: un user dejó el disco al 100%.
+        # Usamos `cp -a` que preserva symlinks/perms/timestamps con un
+        # flag, y es ~3x más rápido que copytree (kernel-level).
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            shutil.copytree,
-            str(TEMPLATE_PREFIX),
-            str(pfx),
-            False,                  # symlinks=False
-        )
+
+        def _do_clone():
+            import subprocess
+            res = subprocess.run(
+                ["cp", "-a", str(TEMPLATE_PREFIX) + "/.", str(pfx) + "/"],
+                capture_output=True, text=True, timeout=600,
+            )
+            if res.returncode != 0:
+                raise OSError(
+                    f"cp -a failed (rc={res.returncode}): {res.stderr[:500]}"
+                )
+            return True
+
+        Path(pfx).mkdir(parents=True, exist_ok=True)
+        await loop.run_in_executor(None, _do_clone)
 
         log.info("clone OK for user=%s", user_id)
         return {

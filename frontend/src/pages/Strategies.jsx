@@ -1,16 +1,16 @@
-// Strategies page — wrapper de Strategies section. En novato simplifica:
-// oculta params crudos, banner explicativo "¿Cuál elegir?".
+// Strategies page — wrapper de Strategies section.
+// v3.2: cualquier user logueado puede modificar SU config (mode + min_score).
+// Anónimos: solo lectura.
 
 import { useSettings } from "@/lib/userMode";
 import { useAuth } from "@/lib/AuthProvider";
-import { API_BASE } from "@/lib/api";
 
 import SectionHeader from "@/components/atoms/SectionHeader";
 import StrategiesSection from "@/sections/Strategies";
 
 export default function StrategiesPage() {
     const { isNovato } = useSettings();
-    const { isAdmin } = useAuth();
+    const { isAuthenticated, isAdmin } = useAuth();
 
     return (
         <section className="px-6 lg:px-10 py-8" data-testid="page-strategies">
@@ -19,9 +19,11 @@ export default function StrategiesPage() {
                     code="05 / ESTRATEGIAS"
                     title="Estrategias del Bot"
                     subtitle={
-                        isNovato
-                            ? "Estilos de trading que el bot puede usar. Activá los que querés que esté escaneando."
-                            : "Motor multi-estrategia. Cada estrategia tiene parámetros, schedule y edge histórico."
+                        isAdmin
+                            ? "Bot global del admin. Cambios afectan al systemd service."
+                            : isAuthenticated
+                            ? "Tu config personal. Cambios afectan a tu bot (no al de otros)."
+                            : "Motor multi-estrategia. Iniciá sesión para personalizar tu config."
                     }
                 />
 
@@ -38,19 +40,18 @@ export default function StrategiesPage() {
                                 ¿Cuál elegir?
                             </div>
                             <p className="text-xs text-[var(--text-dim)] leading-relaxed">
-                                Si recién empezás, dejá las estrategias activadas como
-                                vienen por defecto. El bot ya está calibrado para que
-                                funcionen juntas. Más adelante, cuando entiendas cómo
-                                opera cada una, podés desactivar las que no te gusten.
+                                Si recién empezás, usá <strong>AUTO</strong> (recomendado) y
+                                dejá el score mínimo en <strong>70</strong>. El bot va a
+                                evaluar todas las estrategias y operar la mejor señal de
+                                cada par automáticamente.
                             </p>
                         </div>
                     </div>
                 ) : null}
 
                 <StrategiesSection
-                    api={API_BASE}
                     novato={isNovato}
-                    readOnly={!isAdmin}
+                    readOnly={!isAuthenticated}
                 />
             </div>
         </section>

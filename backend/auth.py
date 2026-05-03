@@ -208,6 +208,16 @@ def require_admin(
     return user
 
 
+def optional_user(
+    authorization: Optional[str] = Header(default=None),
+) -> Optional[_CurrentUser]:
+    """Retorna el user si hay token válido, None si no. NO lanza 401.
+    Util para endpoints que tienen contenido tanto público como
+    personalizado (ej. /api/strategies — anónimo ve config global,
+    user logueado ve su config personal)."""
+    return require_auth_optional(authorization)
+
+
 # ─────────────────────────── DB ops ───────────────────────────
 
 async def ensure_users_collection(db) -> None:

@@ -17,13 +17,15 @@ import {
     Eye, ExternalLink, UserPlus, ChevronRight, X, Sparkles, LogIn,
 } from "lucide-react";
 import { useAuth } from "@/lib/AuthProvider";
+import { apiGet } from "@/lib/api";
 
-const XM_REFERRAL = "https://www.xmglobal.com/referral?token=OtZfgkRKCdH25RlT1gJ7hQ";
+const XM_REFERRAL = "https://www.xmglobal.com/referral?token=rTWdnQRq4uSRfxucpQRd2Q";
 const COLLAPSED_KEY = "bot_banner_collapsed_v1";
 
 export default function PublicBanner() {
     const { user, isAuthenticated, isAdmin, loading } = useAuth();
     const [collapsed, setCollapsed] = useState(false);
+    const [hasOwnBroker, setHasOwnBroker] = useState(null);
 
     useEffect(() => {
         try {
@@ -32,6 +34,28 @@ export default function PublicBanner() {
             // noop
         }
     }, []);
+
+    // Si el user logueado tiene su propia cuenta activa, ocultamos el
+    // banner "estás viendo el bot del admin" — ya no aplica.
+    useEffect(() => {
+        if (!isAuthenticated || isAdmin) {
+            setHasOwnBroker(null);
+            return;
+        }
+        let cancelled = false;
+        const check = async () => {
+            try {
+                const r = await apiGet("/users/me/broker");
+                if (cancelled) return;
+                setHasOwnBroker(!!r.data?.active);
+            } catch {
+                if (!cancelled) setHasOwnBroker(false);
+            }
+        };
+        check();
+        const id = setInterval(check, 15000);
+        return () => { cancelled = true; clearInterval(id); };
+    }, [isAuthenticated, isAdmin]);
 
     const toggleCollapse = () => {
         const next = !collapsed;
@@ -45,8 +69,36 @@ export default function PublicBanner() {
 
     if (loading || isAdmin) return null;
 
-    // Logged user (no admin): banner reducido.
+    // Logged user (no admin):
+    //  · Si tiene cuenta activa → banner verde de confirmación
+    //  · Si NO tiene cuenta activa → invitar a conectarla
     if (isAuthenticated) {
+        if (hasOwnBroker === true) {
+            return (
+                <div
+                    className="px-4 py-1.5 border-b border-[var(--border)] text-[10px]"
+                    style={{ background: "rgba(16, 185, 129, 0.07)" }}
+                    data-testid="public-banner-user-connected"
+                >
+                    <div className="max-w-[1400px] mx-auto flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-mono">
+                            <span className="text-[var(--green-bright)] font-bold">●</span>{" "}
+                            <span className="text-[var(--text-dim)]">
+                                Hola {user?.display_name || user?.email?.split("@")[0]} 👋 ·
+                                tu cuenta MT5 está conectada. El bot opera por vos.
+                            </span>
+                        </div>
+                        <Link
+                            to="/mi-cuenta"
+                            className="text-[var(--green-bright)] hover:underline font-mono"
+                        >
+                            Configurar →
+                        </Link>
+                    </div>
+                </div>
+            );
+        }
+        // Sin cuenta o aún cargando
         return (
             <div
                 className="px-4 py-1.5 border-b border-[var(--border)] text-[10px]"
@@ -58,18 +110,25 @@ export default function PublicBanner() {
                         <span className="text-[var(--blue)] font-bold">DEMO</span>{" "}
                         <span className="text-[var(--text-dim)]">
                             Hola {user?.display_name || user?.email?.split("@")[0]} 👋 ·
-                            estás viendo el bot del admin. Pronto vas a poder
-                            conectar tu propia cuenta.
+                            conectá tu cuenta MT5 para que el bot opere por vos.
                         </span>
                     </div>
-                    <a
-                        href={XM_REFERRAL}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[var(--green-bright)] hover:underline font-mono flex items-center gap-1"
-                    >
-                        Crear cuenta XM <ExternalLink size={10} />
-                    </a>
+                    <div className="flex items-center gap-3">
+                        <Link
+                            to="/mi-cuenta"
+                            className="text-[var(--blue)] hover:underline font-mono"
+                        >
+                            Conectar →
+                        </Link>
+                        <a
+                            href={XM_REFERRAL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[var(--green-bright)] hover:underline font-mono flex items-center gap-1"
+                        >
+                            Crear cuenta XM <ExternalLink size={10} />
+                        </a>
+                    </div>
                 </div>
             </div>
         );

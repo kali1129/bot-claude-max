@@ -155,6 +155,27 @@ async def start_bot_process(
     # Halt file dedicado per-user
     halt_file = state_dir / ".HALT"
 
+    # Asegurar que existe strategy_config.json en el state dir del user
+    # con defaults (mode=auto, min_score=70). Si ya existe (porque el
+    # user lo configuró), no lo tocamos. El bot lee este archivo cada
+    # iteración, así cualquier cambio del usuario aplica en vivo.
+    strategy_state = state_dir / "strategy_config.json"
+    if not strategy_state.exists():
+        try:
+            import json as _j
+            from datetime import datetime as _dt, timezone as _tz
+            strategy_state.write_text(_j.dumps({
+                "mode": "auto",
+                "active_strategy": "trend_rider",
+                "min_score": 70,
+                "updated_at": _dt.now(_tz.utc).isoformat(),
+                "note": "default — el usuario puede cambiar via /estrategias",
+            }, indent=2), encoding="utf-8")
+            log.info("seeded default strategy_config for user=%s", user_id)
+        except OSError as exc:
+            log.warning("could not seed strategy_config for %s: %s",
+                        user_id, exc)
+
     # 2. Construir env. Pasamos secretos por env (no se persisten en disco).
     env = os.environ.copy()
     env.update({

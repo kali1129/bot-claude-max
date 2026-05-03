@@ -2207,13 +2207,39 @@ except ImportError as _e:
 
 
 @app.get("/api/strategies")
-async def api_strategies():
-    """List all available strategies with theoretical + real performance."""
+async def api_strategies(
+    current=Depends(auth_mod.optional_user),
+):
+    """List all available strategies with theoretical + real performance.
+
+    Si el caller es un usuario logueado y NO admin → devuelve la config
+    PERSONAL del user (mode + min_score + active_strategy).
+    Si es admin (o no autenticado) → devuelve la config global.
+    """
     if not _STRAT_AVAILABLE:
         return {"strategies": [], "error": "engine_not_loaded"}
 
     strategies = strat_engine.list_strategies()
-    active = strat_engine.get_active_strategy()
+    # Determinar config a mostrar según quien llama
+    is_admin_caller = bool(
+        current and (
+            getattr(current, "role", "") == "admin"
+            or getattr(current, "legacy_admin", False)
+        )
+    )
+    if current and not is_admin_caller:
+        user_cfg = _load_user_strategy(current.id)
+        active_id = user_cfg.get("active_strategy", "trend_rider")
+        active_mode = user_cfg.get("mode", "auto")
+        active_min_score = user_cfg.get("min_score", 70)
+        scope = "user"
+    else:
+        global_cfg = strat_engine.load_config()
+        active_id = global_cfg.get("active_strategy", "trend_rider")
+        active_mode = global_cfg.get("mode", "auto")
+        active_min_score = global_cfg.get("min_score", 70)
+        scope = "admin_global"
+    active = strat_engine.REGISTRY.get(active_id) or strat_engine.get_active_strategy()
 
     # Compute real stats per strategy from research log
     log_path = Path(os.path.expanduser(
@@ -2300,17 +2326,179 @@ async def api_strategies():
             "active": False,
         })
 
-    return {"strategies": strategies, "active": active.id}
+    return {
+        "strategies": strategies,
+        "active": active.id,
+        "mode": active_mode,
+        "min_score": active_min_score,
+        "scope": scope,
+        "min_score_range": {"min": 1, "max": 95},
+    }
 
 
 @app.post("/api/strategies/{strategy_id}/activate")
 async def api_activate_strategy(strategy_id: str, _=Depends(require_token)):
-    """Switch the active trading strategy."""
+    """Legacy: switch a UNA estrategia (modo SINGLE) — admin only path.
+    Para usuarios per-cuenta usar POST /api/users/me/strategy."""
     if not _STRAT_AVAILABLE:
         raise HTTPException(503, "Strategy engine not loaded")
     result = strat_engine.set_active_strategy(strategy_id)
     if not result.get("ok"):
         raise HTTPException(400, result.get("reason", "unknown error"))
+    return result
+
+
+# ─────────────────────────── /api/users/me/strategy ──────────────────
+# Cada usuario puede setear su propia config:
+#   - mode: "auto" (todas las estrategias evaluadas, mejor score gana)
+#           "single" (solo la active_strategy)
+#   - active_strategy: id de la estrategia preferida
+#   - min_score: umbral mínimo para que el bot abra trade (1-95, NO 100)
+#
+# El bot del admin (systemd) lee /opt/trading-bot/state/strategy_config.json.
+# Los user-bots leen /opt/trading-bot/users/{user_id}/state/strategy_config.json
+# (vía STATE_DIR env var).
+#
+# Las stats por estrategia siguen siendo GLOBALES — todos los trades de
+# todos los usuarios contribuyen al expectancy_tracker para que cualquiera
+# vea cuál estrategia es la más rentable en el agregado.
+
+class StrategyConfigPayload(BaseModel):
+    """Payload para POST /api/users/me/strategy."""
+    mode: Optional[Literal["auto", "single"]] = None
+    active_strategy: Optional[str] = None
+    min_score: Optional[int] = Field(default=None, ge=1, le=95)
+
+
+def _user_strategy_state_path(user_id: str) -> Path:
+    """Path al strategy_config.json del usuario (mismo dir que el bot)."""
+    safe = "".join(c for c in user_id if c.isalnum() or c in ("-", "_"))
+    return Path(os.environ.get(
+        "USERS_BASE_DIR", "/opt/trading-bot/users"
+    )) / safe / "state" / "strategy_config.json"
+
+
+def _load_user_strategy(user_id: str) -> dict:
+    """Carga config del user. Si no existe, defaults."""
+    from json import loads as _jloads, JSONDecodeError as _JErr
+    defaults = {
+        "mode": "auto",
+        "active_strategy": "trend_rider",
+        "min_score": 70,
+    }
+    p = _user_strategy_state_path(user_id)
+    if not p.exists():
+        return defaults
+    try:
+        data = _jloads(p.read_text(encoding="utf-8"))
+        return {
+            "mode": data.get("mode", defaults["mode"])
+                if data.get("mode") in ("auto", "single") else defaults["mode"],
+            "active_strategy": data.get("active_strategy",
+                                          defaults["active_strategy"]),
+            "min_score": max(1, min(95, int(
+                data.get("min_score", defaults["min_score"])
+            ))),
+            "updated_at": data.get("updated_at"),
+        }
+    except (OSError, _JErr, ValueError, TypeError):
+        return defaults
+
+
+def _save_user_strategy(user_id: str, *, mode=None, active_strategy=None,
+                         min_score=None) -> dict:
+    """Atomic update del strategy_config del user. Solo modifica los
+    campos pasados."""
+    from json import dumps as _jdumps
+    cur = _load_user_strategy(user_id)
+    if mode is not None:
+        if mode not in ("auto", "single"):
+            return {"ok": False, "reason": "INVALID_MODE"}
+        cur["mode"] = mode
+    if active_strategy is not None:
+        # Validamos contra la lista del strat_engine si está disponible
+        if _STRAT_AVAILABLE:
+            available = list(strat_engine.REGISTRY.keys())
+            if active_strategy not in available:
+                return {"ok": False, "reason": "UNKNOWN_STRATEGY",
+                        "available": available}
+        cur["active_strategy"] = active_strategy
+    if min_score is not None:
+        clamped = max(1, min(95, int(min_score)))
+        cur["min_score"] = clamped
+    cur["updated_at"] = datetime.now(timezone.utc).isoformat()
+    p = _user_strategy_state_path(user_id)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_jdumps(cur, indent=2), encoding="utf-8")
+        log.info("user-strategy saved user=%s cfg=%s", user_id, cur)
+        return {"ok": True, **cur}
+    except OSError as exc:
+        return {"ok": False, "reason": str(exc)}
+
+
+@api_router.get("/users/me/strategy")
+async def get_my_strategy(
+    current=Depends(auth_mod.require_user),
+):
+    """Config de estrategia del usuario.
+
+    Para admin: retorna la config GLOBAL (la que usa el bot systemd).
+    Para users: retorna la config del state file de su prefix.
+    """
+    if not _STRAT_AVAILABLE:
+        raise HTTPException(503, "Strategy engine not loaded")
+    is_admin = (getattr(current, "role", "") == "admin"
+                or getattr(current, "legacy_admin", False))
+    if is_admin:
+        cfg = strat_engine.load_config()
+    else:
+        cfg = _load_user_strategy(current.id)
+    return {
+        "ok": True,
+        "config": cfg,
+        "available_strategies": [
+            {"id": s["id"], "name": s.get("name", s["id"]),
+             "type": s.get("type"), "description": s.get("description")}
+            for s in strat_engine.list_strategies()
+        ],
+        "min_score_range": {"min": 1, "max": 95},
+        "scope": "admin_global" if is_admin else "user_per_account",
+    }
+
+
+@api_router.post("/users/me/strategy")
+async def post_my_strategy(
+    payload: StrategyConfigPayload,
+    current=Depends(auth_mod.require_user),
+):
+    """Update config del user (o admin global)."""
+    if not _STRAT_AVAILABLE:
+        raise HTTPException(503, "Strategy engine not loaded")
+    is_admin = (getattr(current, "role", "") == "admin"
+                or getattr(current, "legacy_admin", False))
+    # Validación extra: si min_score fue 100 o más, bloquear con mensaje claro.
+    if payload.min_score is not None and payload.min_score >= 100:
+        raise HTTPException(
+            400,
+            "min_score=100% no se permite — no existe certeza absoluta en "
+            "trading y suena engañoso. Probá con valores 60-90."
+        )
+    if is_admin:
+        result = strat_engine.save_config(
+            mode=payload.mode,
+            active_strategy=payload.active_strategy,
+            min_score=payload.min_score,
+        )
+    else:
+        result = _save_user_strategy(
+            current.id,
+            mode=payload.mode,
+            active_strategy=payload.active_strategy,
+            min_score=payload.min_score,
+        )
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("reason", "save failed"))
     return result
 
 

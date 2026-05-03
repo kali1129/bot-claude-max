@@ -1482,15 +1482,29 @@ def main():
                         "open_symbols": list(open_symbols)})
                 _sleep(args.interval)
                 continue
+
+            # Reload strategy_config cada iteración. Si el usuario cambió
+            # min_score / mode desde la UI, los cambios aplican en vivo
+            # sin reiniciar el bot. Defaults a CLI args si no hay config.
+            try:
+                _strat_cfg = strat_engine.load_config()
+                _live_min_score = int(_strat_cfg.get("min_score") or args.min_score)
+                _live_mode = _strat_cfg.get("mode", "auto")
+            except Exception as _e_cfg:
+                _live_min_score = args.min_score
+                _live_mode = "auto"
+                log.debug("strategy_config load failed: %s", _e_cfg)
+
             best, scan_log = _scan(scannable)
             _audit({"iter": iteration, "phase": "scan", "balance": balance,
                     "best_score": best["score"] if best else 0,
                     "open_symbols": list(open_symbols),
+                    "min_score": _live_min_score, "mode": _live_mode,
                     "candidates": scan_log})
 
-            if best is None or best["score"] < args.min_score:
-                log.info("no setup ≥ %d (best %s)", args.min_score,
-                         best["score"] if best else "n/a")
+            if best is None or best["score"] < _live_min_score:
+                log.info("no setup ≥ %d (best %s, mode=%s)", _live_min_score,
+                         best["score"] if best else "n/a", _live_mode)
                 if iteration % 6 == 0:
                     _nt = sorted(
                         [c for c in scan_log if "score" in c],
