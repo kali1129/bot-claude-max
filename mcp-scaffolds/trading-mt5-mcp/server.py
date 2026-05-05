@@ -552,6 +552,7 @@ def place_order(
     tp: float,
     comment: str = "claude",
     client_order_id: Optional[str] = None,
+    aggregator: bool = False,
 ) -> dict:
     """The ONLY tool that affects the account.
 
@@ -644,6 +645,7 @@ def place_order(
             "risk_usd": risk_usd,
             "trades_today": today_stats["trades_today"],
             "consecutive_losses_today": today_stats["consecutive_losses_today"],
+            "aggregator": bool(aggregator),
         }
 
         rejection = guards.run_guards(ctx)
