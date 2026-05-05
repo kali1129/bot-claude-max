@@ -18,10 +18,13 @@ import secrets
 import uuid
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.cors import CORSMiddleware
 
 # CRÍTICO: load_dotenv ANTES de importar `auth` o cualquier módulo que lea
@@ -34,6 +37,7 @@ import auth as auth_mod  # noqa: E402  (relativa al WORKINGDIR del backend)
 import broker_manager  # noqa: E402
 import bot_supervisor  # noqa: E402
 import crypto_box  # noqa: E402
+import legal as legal_mod  # noqa: E402
 import process_supervisor  # noqa: E402
 import wine_prefix_manager  # noqa: E402
 
@@ -258,7 +262,31 @@ def _stop_equity_sampler():
         _sampler_thread = None
 
 
-app = FastAPI(title="Futures Trading Plan Dashboard", lifespan=lifespan)
+# Rate limiter — anti brute-force para /api/auth/*. Identifica por IP del
+# cliente real (X-Forwarded-For si nginx); fallback a remote_addr.
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return fwd or get_remote_address(request)
+
+
+limiter = Limiter(key_func=_client_ip)
+
+# Swagger/OpenAPI bajo /api/swagger* para que pase el reverse proxy
+# (nginx solo expone /api/). El path /api/docs ya está usado por content
+# delivery, por eso elegimos /api/swagger.
+app = FastAPI(
+    title="Futures Trading Plan Dashboard",
+    description="API del bot de trading + panel SaaS. "
+                "Auth por JWT (/api/auth/login). "
+                "Disclaimer: el trading conlleva riesgo de pérdida total — leé /api/legal/risk-disclaimer.",
+    version="0.2.0",
+    lifespan=lifespan,
+    docs_url="/api/swagger",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # Reescribir validation errors de Pydantic (default 422) a 400 para matchear
@@ -397,18 +425,49 @@ async def health():
 # role=admin (Fase 1) o el legacy DASHBOARD_TOKEN.
 
 @api_router.post("/auth/register")
-async def auth_register(payload: auth_mod.RegisterPayload, db=Depends(get_db)):
+@limiter.limit("5/hour")
+async def auth_register(request: Request, payload: auth_mod.RegisterPayload, db=Depends(get_db)):
     """Crea un usuario nuevo (role=user). En Fase 1 estos usuarios pueden
     LEER pero no modificar el bot — sus mods llegan en Fase 2 (per-user
-    bot con su propio MT5)."""
+    bot con su propio MT5).
+
+    Rate-limit: 5/hora por IP (anti-bot signup abuse).
+    """
     res = await auth_mod.register_handler(payload, db)
     return res.model_dump()
 
 
 @api_router.post("/auth/login")
-async def auth_login(payload: auth_mod.LoginPayload, db=Depends(get_db)):
+@limiter.limit("10/minute")
+async def auth_login(request: Request, payload: auth_mod.LoginPayload, db=Depends(get_db)):
+    """Login con email + password. Devuelve JWT.
+
+    Rate-limit: 10/min por IP (anti brute-force credenciales).
+    """
     res = await auth_mod.login_handler(payload, db)
     return res.model_dump()
+
+
+# ─────────────────────────── /api/legal/* ───────────────────────────
+# Documentos legales públicos: aviso de riesgo, TOS, privacy. Versionados
+# para que el frontend pueda forzar re-aceptación cuando cambie el texto.
+
+@api_router.get("/legal", tags=["legal"])
+async def legal_index():
+    """Lista los documentos legales disponibles con su versión actual."""
+    return {"documents": legal_mod.list_documents()}
+
+
+@api_router.get("/legal/{slug}", tags=["legal"])
+async def legal_get(slug: str):
+    """Devuelve un documento legal por slug.
+    Slugs válidos: risk-disclaimer, tos, privacy.
+    """
+    doc = legal_mod.get_document(slug)
+    if doc is None:
+        raise HTTPException(404, f"Documento legal '{slug}' no existe. "
+                                  f"Slugs válidos: {list(legal_mod.DOCUMENTS.keys())}")
+    return doc
 
 
 @api_router.get("/auth/me")
