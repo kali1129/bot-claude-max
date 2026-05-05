@@ -14,6 +14,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
+import Footer from "@/components/Footer";
 import AggressiveBanner from "@/components/atoms/AggressiveBanner";
 import PublicBanner from "@/components/atoms/PublicBanner";
 
@@ -60,7 +61,9 @@ export default function AppShell({ children }) {
 
                 <TopBar />
 
-                <div className="grid-bg min-h-[calc(100vh-120px)]">{children}</div>
+                <div className="grid-bg min-h-[calc(100vh-180px)]">{children}</div>
+
+                <Footer />
             </main>
         </div>
     );

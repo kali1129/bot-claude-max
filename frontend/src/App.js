@@ -22,6 +22,7 @@ import Login from "@/pages/Login";
 import Register from "@/pages/Register";
 import Admin from "@/pages/Admin";
 import MyAccount from "@/pages/MyAccount";
+import Legal from "@/pages/Legal";
 
 // Wrapper que combina OnboardingGate + AppShell (sidebar + topbar) para
 // las rutas "normales" del dashboard.
@@ -74,6 +75,10 @@ function App() {
                                 {/* Auth — sin shell, sin onboarding gate */}
                                 <Route path="/login" element={<Login />} />
                                 <Route path="/register" element={<Register />} />
+
+                                {/* Legal pages — públicas, sin shell ni auth */}
+                                <Route path="/legal" element={<Legal />} />
+                                <Route path="/legal/:slug" element={<Legal />} />
 
                                 {/* Onboarding wizard — solo admin (Fase 1).
                                     En Fase 2 cada user tendrá su onboarding. */}

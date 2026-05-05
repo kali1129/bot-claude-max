@@ -1,0 +1,33 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    "node_modules",
+    "frontend/build",
+    "frontend/build.prev",
+    "frontend/src.prev",
+    "**/legacy/**",
+    "**/__pycache__/**",
+    "**/*.bak",
+    "**/*.bak2",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "E402",  # module-level import not at top — needed for env-based imports
+    "B008",  # function call in argument default — FastAPI Depends() pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["B011", "F841"]
+"**/auto_trader.py" = ["F841", "E731"]   # legacy vars + lambdas
+"**/server.py" = ["F841"]

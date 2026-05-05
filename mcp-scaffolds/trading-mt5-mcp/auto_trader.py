@@ -51,6 +51,7 @@ log = logging.getLogger("auto-trader")
 import MetaTrader5 as mt5  # noqa: E402
 import server as trading                              # trading-mt5-mcp/server.py    # noqa: E402
 import halt as halt_mod                                # _shared/halt.py              # noqa: E402
+import aggregator_state                                # local — signal_aggregator state  # noqa: E402
 
 # New shared modules (capital ledger, expectancy, regime, correlation, kelly, user_settings)
 from common import capital_ledger, expectancy_tracker, regime as regime_mod, correlation as corr_mod, sizing_kelly, user_settings  # noqa: E402
@@ -740,8 +741,67 @@ def _r_progress(side: str, entry: float, sl_initial_distance: float,
     return delta / sl_initial_distance
 
 
+def _aggregator_soft_stop_check(positions, iteration: int) -> set:
+    """Force-close any aggregator-managed position whose floating PnL is
+    worse than -soft_stop_pct * equity_at_entry.
+
+    Returns the set of tickets that were closed (so the caller can skip
+    BE/trailing logic on them).
+
+    This runs in any TRADING_MODE (paper/demo/live). For paper, it's a no-op
+    because aggregator paper positions aren't placed via this path.
+    """
+    closed = set()
+    agg_positions = aggregator_state.list_positions()
+    if not agg_positions:
+        return closed
+
+    for p in positions:
+        ticket_str = str(int(p.ticket))
+        meta = agg_positions.get(ticket_str)
+        if not meta:
+            continue
+        try:
+            equity_at_entry = float(meta.get("equity_at_entry", 0.0))
+            soft_stop_pct = float(meta.get("soft_stop_pct", 0.10))
+            if equity_at_entry <= 0:
+                continue
+            floating_pnl = float(p.profit or 0.0)
+            threshold_usd = -equity_at_entry * soft_stop_pct
+            if floating_pnl <= threshold_usd:
+                log.warning(
+                    "aggregator soft-stop HIT: ticket=%s sym=%s "
+                    "pnl=$%.2f threshold=$%.2f (profile=%s, eq_entry=$%.2f)",
+                    p.ticket, p.symbol, floating_pnl, threshold_usd,
+                    meta.get("profile"), equity_at_entry,
+                )
+                resp = trading.close_position(int(p.ticket))
+                _audit({
+                    "iter": iteration, "phase": "aggregator_soft_stop",
+                    "ticket": int(p.ticket), "symbol": p.symbol,
+                    "pnl_usd": round(floating_pnl, 2),
+                    "threshold_usd": round(threshold_usd, 2),
+                    "profile": meta.get("profile"),
+                    "equity_at_entry": equity_at_entry,
+                    "result": resp,
+                })
+                if resp.get("ok"):
+                    aggregator_state.remove_position(int(p.ticket))
+                    closed.add(int(p.ticket))
+                    _tg_send(
+                        f"🛑 *Soft-stop:* {p.symbol}\n"
+                        f"P&L flotante: ${floating_pnl:.2f} · "
+                        f"perfil {meta.get('profile')}"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("aggregator soft-stop failed for %s: %s",
+                        getattr(p, "ticket", "?"), exc)
+    return closed
+
+
 def _manage_open_positions(iteration: int) -> None:
     """For each of THIS bot's open MT5 positions:
+      - aggregator soft-stop check (closes if floating PnL exceeds threshold)
       - if R >= 1.0 and SL not at/past entry → move SL to entry (breakeven)
       - if R >= 1.0 and SL already at/past entry → trail SL behind price by 1× ATR(M15)
     Skip in paper mode. Skip positions whose magic doesn't match THIS bot.
@@ -760,6 +820,12 @@ def _manage_open_positions(iteration: int) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("manage: positions_get failed: %s", exc)
         return
+
+    # Aggregator soft-stop runs FIRST. Any positions it closes are removed
+    # from the management loop below so we don't try to BE/trail a closed one.
+    soft_closed = _aggregator_soft_stop_check(positions, iteration)
+    if soft_closed:
+        positions = [p for p in positions if int(p.ticket) not in soft_closed]
 
     # Detect closures: anything in research state that's no longer open
     try:
@@ -792,6 +858,8 @@ def _manage_open_positions(iteration: int) -> None:
                     # Drop it from state anyway — don't keep retrying
                     state.pop(str(int(ticket)), None)
                     _research_save_state(state)
+                    if aggregator_state.get_position(int(ticket)):
+                        aggregator_state.remove_position(int(ticket))
                     continue
                 pnl = float(out_deal.profit or 0.0)
                 exit_price = float(out_deal.price)
@@ -834,6 +902,9 @@ def _manage_open_positions(iteration: int) -> None:
                     ticket=int(ticket), exit_price=exit_price,
                     pnl_usd=pnl, r_multiple=r_mult, exit_reason=reason,
                 )
+                # If this was an aggregator position, drop it from state.
+                if aggregator_state.get_position(int(ticket)):
+                    aggregator_state.remove_position(int(ticket))
                 _audit({"iter": iteration, "phase": "research_close",
                         "ticket": ticket, "exit": exit_price,
                         "pnl": pnl, "r": r_mult, "reason": reason})
@@ -883,8 +954,16 @@ def _manage_open_positions(iteration: int) -> None:
     except Exception:  # noqa: BLE001
         state = {}
 
+    _agg_open = aggregator_state.list_positions()
+
     for p in positions:
         try:
+            # Aggregator positions skip BE/trailing — exit logic is
+            # soft-stop (closes early on drawdown) or natural TP hit.
+            # Moving SL would corrupt the "no real SL" contract.
+            if str(int(p.ticket)) in _agg_open:
+                continue
+
             sym = p.symbol
             side = "buy" if p.type == 0 else "sell"
             entry = float(p.price_open)
@@ -1440,6 +1519,22 @@ def main():
             total_open = len(mt5_positions) + paper_open_n
             open_symbols = {p["symbol"].upper() for p in mt5_positions} | \
                             {p["symbol"].upper() for p in paper_trades}
+
+            # === Aggregator single-position lock ===
+            # Si signal_aggregator es la estrategia activa (mode=single +
+            # active_strategy=signal_aggregator), bloquea TODA nueva entrada
+            # mientras haya cualquier posición abierta. La idea es: una sola
+            # operación corriendo, sin SL real, hasta que cierre por TP o
+            # soft-stop. El soft-stop se evalúa en _manage_open_positions.
+            if aggregator_state.is_active_strategy() and total_open >= 1:
+                if iteration % 10 == 0:
+                    log.info("aggregator: %d positions open — waiting for "
+                             "TP/soft-stop before new entry", total_open)
+                _audit({"iter": iteration, "skip": "AGGREGATOR_ONE_AT_A_TIME",
+                        "open_symbols": list(open_symbols),
+                        "total_open": total_open})
+                _sleep(args.interval)
+                continue
             # if total_open >= MAX_OPEN_POSITIONS:
                 # log.info("max positions hit (%d/%d) — passing",
                          # total_open, MAX_OPEN_POSITIONS)
@@ -1672,16 +1767,53 @@ def main():
                 _sleep(args.interval)
                 continue
 
-            size = risk_sizing.calc_position_size(
-                balance=balance,
-                risk_pct=_eff_risk_pct,
-                entry=best["entry"], sl=best["sl"],
-                tick_value=sym_info["tick_value"],
-                tick_size=sym_info["tick_size"],
-                lot_step=sym_info["volume_step"],
-                min_lot=sym_info["volume_min"],
-                max_lot=_eff_max_lot,
-            )
+            # Aggregator uses a custom sizing path: the SL is a wide
+            # backstop, not the real risk control, so risk_sizing's
+            # "balance × risk% / SL distance" formula collapses to ~0
+            # lots. Instead, size by what the soft-stop allows AND what
+            # produces a reachable TP at +target_pct of equity.
+            _is_agg_pre = bool(best.get("extra", {}).get("aggregator"))
+            if _is_agg_pre:
+                _agg_cfg_pre = aggregator_state.load_profile(best["symbol"])
+                _soft_pct = float(_agg_cfg_pre["drawdown_pct"])
+                _tgt_pct_pre = float(_agg_cfg_pre["target_pct"])
+                _entry = float(best["entry"])
+                _sl_dist = abs(_entry - float(best["sl"]))
+                _tv = float(sym_info["tick_value"]) or 1.0
+                _ts = float(sym_info["tick_size"]) or 0.00001
+                _step = float(sym_info["volume_step"]) or 0.01
+                _vmin = float(sym_info["volume_min"]) or 0.01
+                # Cap so backstop loss < soft-stop loss with 5% margin.
+                _backstop_cap = balance * _soft_pct * 0.95
+                _lots_by_backstop = (_backstop_cap / ((_sl_dist / _ts) * _tv)) \
+                                    if _sl_dist > 0 and _tv > 0 else 0.0
+                # Cap so TP price distance >= 0.05% of entry (reachable).
+                _min_tp_dist = _entry * 0.0005
+                _target_usd_pre = balance * _tgt_pct_pre
+                _lots_by_tp = (_target_usd_pre * _ts / (_min_tp_dist * _tv)) \
+                              if _min_tp_dist > 0 and _tv > 0 else 0.0
+                _lots_raw = max(_lots_by_backstop, _lots_by_tp)
+                _lots_floor = (int(_lots_raw / _step) * _step) if _step > 0 else 0
+                if _lots_floor < _vmin:
+                    _lots_final = _vmin   # tiny account → minimum exposure
+                else:
+                    _lots_final = round(min(_lots_floor, _eff_max_lot or _lots_floor), 4)
+                size = {
+                    "lots": _lots_final,
+                    "risk_dollars": round(_lots_final * (_sl_dist / _ts) * _tv, 2),
+                    "method": "aggregator",
+                }
+            else:
+                size = risk_sizing.calc_position_size(
+                    balance=balance,
+                    risk_pct=_eff_risk_pct,
+                    entry=best["entry"], sl=best["sl"],
+                    tick_value=sym_info["tick_value"],
+                    tick_size=sym_info["tick_size"],
+                    lot_step=sym_info["volume_step"],
+                    min_lot=sym_info["volume_min"],
+                    max_lot=_eff_max_lot,
+                )
             log.info("setup %s %s score=%d kelly_pct=%.3f%% lots=%s risk=$%s edge=%s",
                      best["symbol"], best["side"], best["score"],
                      _eff_risk_pct, size.get("lots"), size.get("risk_dollars"),
@@ -1694,14 +1826,48 @@ def main():
                 _sleep(args.interval)
                 continue
 
+            # === Aggregator-specific: recompute TP for +target_pct of equity ===
+            # The strategy returns a placeholder TP that satisfies the
+            # SL_TP_SIDE guard. Now that we know the real lot size, we can
+            # compute the price level where unrealized profit == target_pct
+            # of equity at entry.
+            #     pnl_usd = lots * (price_distance / tick_size) * tick_value
+            #   ⇒ price_distance = (target_usd * tick_size) / (lots * tick_value)
+            _is_aggregator = bool(best.get("extra", {}).get("aggregator"))
+            _agg_profile_cfg = aggregator_state.load_profile(best["symbol"]) \
+                                if _is_aggregator else {}
+            if _is_aggregator:
+                _target_pct = float(_agg_profile_cfg.get("target_pct", 0.01))
+                _target_usd = max(0.01, float(equity) * _target_pct)
+                _lots_real = float(size["lots"])
+                _tv = float(sym_info["tick_value"]) or 1.0
+                _ts = float(sym_info["tick_size"]) or 0.00001
+                if _lots_real > 0 and _tv > 0:
+                    _price_distance = (_target_usd * _ts) / (_lots_real * _tv)
+                else:
+                    _price_distance = 0.0
+                if _price_distance > 0:
+                    if best["side"] == "buy":
+                        _new_tp = best["entry"] + _price_distance
+                    else:
+                        _new_tp = best["entry"] - _price_distance
+                    log.info("aggregator TP recompute: %s %s eq=$%.2f "
+                             "target=$%.2f (%.2f%%) lots=%s → tp %s→%s",
+                             best["symbol"], best["side"], equity, _target_usd,
+                             _target_pct * 100, size.get("lots"),
+                             best["tp"], round(_new_tp, 5))
+                    best["tp"] = round(_new_tp, 5)
+
             # 4. place_order (mode=paper → synthetic ticket; demo/live → real)
             coid = f"auto-{iteration}-{uuid.uuid4().hex[:8]}"
             result = trading.place_order(
                 symbol=best["symbol"], side=best["side"],
                 lots=float(size["lots"]),
                 sl=float(best["sl"]), tp=float(best["tp"]),
-                comment=f"auto[{best['score']}]",
+                comment=("agg[%d]" % best["score"]) if _is_aggregator
+                         else f"auto[{best['score']}]",
                 client_order_id=coid,
+                aggregator=_is_aggregator,
             )
             log.info("place_order → %s", result)
             _audit({"iter": iteration, "phase": "order",
@@ -1758,6 +1924,30 @@ def main():
                     )
                 except Exception as exc:  # noqa: BLE001
                     log.warning("research_open write failed: %s", exc)
+
+            # Register aggregator position metadata so the soft-stop
+            # manager and cleanup loop can find it later.
+            if result.get("ok") and _is_aggregator:
+                try:
+                    aggregator_state.register_position(
+                        ticket=int(result["ticket"]),
+                        symbol=best["symbol"],
+                        side=best["side"],
+                        equity_at_entry=float(equity),
+                        profile=str(_agg_profile_cfg.get("profile", "conservative")),
+                        target_pct=float(_agg_profile_cfg.get("target_pct", 0.01)),
+                        source_strategy=str(best.get("extra", {}).get("source_strategy", "?")),
+                        source_score=int(best.get("extra", {}).get("source_score", best["score"])),
+                        entry=float(result.get("filled_at") or best["entry"]),
+                        lots=float(size["lots"]),
+                    )
+                    log.info("aggregator registered ticket=%s eq_entry=$%.2f "
+                             "soft_stop=%.0f%% target=%.1f%%",
+                             result["ticket"], float(equity),
+                             _agg_profile_cfg.get("drawdown_pct", 0.10) * 100,
+                             _agg_profile_cfg.get("target_pct", 0.01) * 100)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("aggregator state register failed: %s", exc)
 
             # In paper mode the result has a synthetic ticket. Track it
             # locally so _monitor_paper_trades can close it on SL/TP.

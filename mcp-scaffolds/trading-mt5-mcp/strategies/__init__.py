@@ -21,6 +21,7 @@ from .trend_rider import TrendRider
 from .mean_reverter import MeanReverter
 from .breakout_hunter import BreakoutHunter
 from .score_v3 import ScoreV3
+from .signal_aggregator import SignalAggregator
 
 log = logging.getLogger("strategies")
 
@@ -29,6 +30,7 @@ REGISTRY: Dict[str, Strategy] = {
     "mean_reverter": MeanReverter(),
     "breakout_hunter": BreakoutHunter(),
     "score_v3": ScoreV3(),
+    "signal_aggregator": SignalAggregator(),
 }
 
 DEFAULT_STRATEGY = "trend_rider"
@@ -50,6 +52,7 @@ STRATEGY_HOURS: Dict[str, list] = {
     "mean_reverter":   [{"start": 0, "end": 7}, {"start": 17, "end": 23}],
     "breakout_hunter": [{"start": 7, "end": 10}, {"start": 13, "end": 16}],
     "score_v3":        [{"start": 7, "end": 20}],
+    "signal_aggregator": [],   # 24/7 — sub-strategies enforce their own hours
 }
 
 

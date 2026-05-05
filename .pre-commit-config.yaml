@@ -1,0 +1,27 @@
+# Pre-commit hooks — run with: pre-commit install (after: pip install pre-commit)
+#
+# Catches the dumb stuff before it hits CI:
+#   - Python syntax errors
+#   - Trailing whitespace, large files, merge conflict markers
+#   - ruff lint (no auto-fix to avoid unexpected diffs)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-ast
+        name: Python AST parse
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-json
+        exclude: '\.vscode/.*\.json$'
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7
+    hooks:
+      - id: ruff
+        args: [--no-fix]
