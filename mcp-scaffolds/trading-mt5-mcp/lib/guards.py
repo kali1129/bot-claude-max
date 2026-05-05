@@ -128,6 +128,11 @@ def guard_rr(ctx: dict) -> Optional[dict]:
         return {"reason": "SL_INVALID", "detail": "entry/sl/tp incompletos"}
     if abs(entry - sl) == 0:
         return {"reason": "SL_INVALID", "detail": "SL == entry"}
+    # signal_aggregator deliberadamente usa SL muy ancho (backstop) y TP
+    # corto (+1% equity). El soft-stop en auto_trader es el control real.
+    # Saltear MIN_RR para esta ruta — los demás guards siguen activos.
+    if ctx.get("aggregator"):
+        return None
     rr_val = rr(entry, sl, tp)
     if rr_val < MIN_RR:
         return {"reason": "RR_TOO_LOW", "detail": f"R:R {rr_val:.2f} < {MIN_RR}"}
@@ -176,6 +181,12 @@ def guard_risk_dollars(ctx: dict) -> Optional[dict]:
     risk_usd = ctx.get("risk_usd")
     balance = ctx.get("balance")
     if risk_usd is None or balance is None:
+        return None
+    # signal_aggregator: el "risk_usd" calculado contra el SL backstop
+    # (5-20% del precio) sobrepasa el cap por diseño. El control real es
+    # el soft-stop interno (10/25/50% del equity al entrar). Bypass aquí
+    # — el size cap del aggregator ya respeta el soft-stop.
+    if ctx.get("aggregator"):
         return None
     cap = balance * MAX_RISK_PER_TRADE_PCT / 100.0
     slack = 1.10 if balance < 500 else 1.05
@@ -307,6 +318,13 @@ def guard_cooldown_after_losses(ctx: dict):
 def guard_low_profit_pair(ctx: dict):
     """Block pairs that have shown negative avg R over recent trades.
     Reads from trade_research.jsonl if available."""
+    # signal_aggregator: history reflects the pre-aggregator system whose
+    # negative R is exactly the problem the aggregator was built to fix.
+    # The aggregator-validated allowlist (EURUSD, GBPUSD only) already
+    # gates which pairs we trade, so this gate would just block re-entry
+    # forever on the historical data.
+    if ctx.get("aggregator"):
+        return None
     min_trades = int(os.environ.get("LOW_PROFIT_MIN_TRADES", "5"))
     min_avg_r = float(os.environ.get("LOW_PROFIT_MIN_AVG_R", "-0.3"))
     symbol = ctx.get("symbol", "")
