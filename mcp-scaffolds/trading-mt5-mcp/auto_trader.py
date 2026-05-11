@@ -1,4 +1,4 @@
-"""auto_trader.py — autonomous loop that ties the 4 MCPs together.
+"""auto_trader.py - autonomous loop that ties the 4 MCPs together.
 
 Every interval:
   1. Pre-flight: kill-switch + risk-mcp.should_stop_trading + open positions
@@ -51,7 +51,7 @@ log = logging.getLogger("auto-trader")
 import MetaTrader5 as mt5  # noqa: E402
 import server as trading                              # trading-mt5-mcp/server.py    # noqa: E402
 import halt as halt_mod                                # _shared/halt.py              # noqa: E402
-import aggregator_state                                # local — signal_aggregator state  # noqa: E402
+import aggregator_state                                # local - signal_aggregator state  # noqa: E402
 
 # New shared modules (capital ledger, expectancy, regime, correlation, kelly, user_settings)
 from common import capital_ledger, expectancy_tracker, regime as regime_mod, correlation as corr_mod, sizing_kelly, user_settings  # noqa: E402
@@ -94,7 +94,7 @@ PAPER_OPEN_FILE = HERE / "paper_open.json"   # in-flight paper trades
 PAPER_TRADES_FILE = HERE / "paper_trades.jsonl"  # closed paper trades
 LAST_SCAN_FILE = HERE / "last_scan.json"     # most recent scan snapshot
 
-# Research log — structured per-trade record for post-test analysis.
+# Research log - structured per-trade record for post-test analysis.
 # Each line is one event: {open, manage, close}. Stitched together by ticket.
 # The dashboard pulls this via /api/research/trades.
 RESEARCH_LOG = LOG_DIR / "trade_research.jsonl"
@@ -118,7 +118,7 @@ TG_ENABLED = (os.environ.get("TELEGRAM_NOTIFICATIONS_ENABLED", "true") or "")\
 
 
 def _tg_send(text: str) -> None:
-    """Best-effort Telegram notification — never blocks the bot."""
+    """Best-effort Telegram notification - never blocks the bot."""
     if not (TG_ENABLED and TG_TOKEN and TG_CHAT):
         return
     try:
@@ -136,7 +136,7 @@ def _tg_send(text: str) -> None:
     except Exception as exc:  # noqa: BLE001
         log.debug("telegram failed: %s", exc)
 
-# Watchlist tuning — 24h test máxima cobertura.
+# Watchlist tuning - 24h test máxima cobertura.
 # Crypto primero (24/7, volatilidad alta, exento del blackout).
 # Luego majors + gold + 3 nuevos majors (USDCHF, NZDUSD, USDCAD) para
 # que con interval=15s y min_score=45 el bot tenga ~10 candidatos por
@@ -147,7 +147,7 @@ WATCHLIST_DEFAULT = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
 ]
 
-# Symbols that ignore session/blackout rules (single source of truth — antes
+# Symbols that ignore session/blackout rules (single source of truth - antes
 # estaba duplicado en 3 lugares con valores ligeramente distintos).
 ALWAYS_TRADEABLE = {"BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT", "BTCEUR"}
 ALWAYS_TRADEABLE_24H = ALWAYS_TRADEABLE  # alias para compat
@@ -197,15 +197,15 @@ _running = True
 
 def _on_signal(signum, _frame):
     global _running
-    log.info("signal %s — stopping after current iteration", signum)
+    log.info("signal %s - stopping after current iteration", signum)
     _running = False
 
 
 def _rotate_if_needed(path: Path, max_mb: float = 50.0) -> None:
     """Rotación simple: si el archivo > max_mb, lo rota a .1.gz (sin gzip por
-    simplicidad — solo rename con timestamp). Mantiene últimos 5 archivos.
+    simplicidad - solo rename con timestamp). Mantiene últimos 5 archivos.
 
-    Llamado de forma "best effort" — failures no rompen el bot.
+    Llamado de forma "best effort" - failures no rompen el bot.
     """
     try:
         if not path.exists():
@@ -237,7 +237,7 @@ def _audit(payload: dict) -> None:
     payload = {"ts": datetime.now(timezone.utc).isoformat(), **payload}
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, default=str) + "\n")
-    # Check size cada ~500 líneas (no en cada write — overhead)
+    # Check size cada ~500 líneas (no en cada write - overhead)
     _AUDIT_LINES_SINCE_ROTATE += 1
     if _AUDIT_LINES_SINCE_ROTATE >= 500:
         _rotate_if_needed(LOG_FILE, max_mb=50.0)
@@ -245,7 +245,7 @@ def _audit(payload: dict) -> None:
 
 
 # ============================================================================
-# Research log — structured per-trade record for post-test feedback
+# Research log - structured per-trade record for post-test feedback
 # ============================================================================
 
 def _research_write(event_type: str, payload: dict) -> None:
@@ -333,7 +333,7 @@ def _research_open(*, ticket: int, setup: dict, lots: float, risk_dollars: float
         ),
         # Top runners-up that the bot REJECTED in favour of this trade. If
         # we're picking USDJPY at score 75 but rejecting EURUSD at 70, we
-        # want to know — sometimes the runner-up would have been the win.
+        # want to know - sometimes the runner-up would have been the win.
         "runners_up": [
             {"symbol": r.get("symbol"), "side": r.get("side"),
              "score": r.get("score"), "rec": r.get("rec")}
@@ -591,7 +591,7 @@ def _close_paper_trade(trade: dict, exit_price: float, reason: str) -> dict:
     # (1.0 lot for FX/CFD, 1 share for stocks). To get the dollar PnL on
     # ``lots`` lots we multiply by ``lots`` exactly once. Earlier comment in
     # this function speculated about brokers where tick_value already includes
-    # lots — that's not the standard MQL5 contract: ``trade_tick_value`` is
+    # lots - that's not the standard MQL5 contract: ``trade_tick_value`` is
     # always per 1.0 lot. Verified by sanity check: 0.01 lots EURUSD with a
     # 10-pip move → 0.01 * (0.0010/0.00001) * tick_value(=$1) = $1.00.
     pnl_usd = round(ticks * tick_value * lots, 2)
@@ -648,7 +648,7 @@ def _close_paper_trade(trade: dict, exit_price: float, reason: str) -> dict:
     return closed
 
 
-MONITOR_MAX_FAILURES = 60   # ~30 min at 30 s interval — then force-close
+MONITOR_MAX_FAILURES = 60   # ~30 min at 30 s interval - then force-close
 
 
 def _monitor_paper_trades() -> dict:
@@ -672,7 +672,7 @@ def _monitor_paper_trades() -> dict:
                     # is to flatten at entry, marking it as a wash). Audit
                     # this so the user sees something is broken with the feed.
                     log.warning("PAPER %s force-closed after %d monitor "
-                                "failures — symbol feed appears dead",
+                                "failures - symbol feed appears dead",
                                 t["symbol"], fails)
                     closed = _close_paper_trade(t, float(t["entry"]),
                                                  "MONITOR_STUCK")
@@ -721,7 +721,7 @@ def _monitor_paper_trades() -> dict:
 # After that, trail SL behind price by 1.0× ATR(M15). This locks in gains so
 # the bot doesn't watch a +2R run reverse to -1R.
 #
-# Demo/live ONLY — paper mode skips because paper_open.json doesn't preserve
+# Demo/live ONLY - paper mode skips because paper_open.json doesn't preserve
 # the original SL distance reliably and MT5 is the source of truth in demo.
 
 from server import MAGIC as TRADING_MAGIC  # noqa: E402  reuse the same magic
@@ -730,7 +730,7 @@ from server import MAGIC as TRADING_MAGIC  # noqa: E402  reuse the same magic
 def _r_progress(side: str, entry: float, sl_initial_distance: float,
                  current_price: float) -> float:
     """How many R-multiples of unrealised PnL the position has, given the
-    INITIAL SL distance (not the current SL — we want the distance at
+    INITIAL SL distance (not the current SL - we want the distance at
     open). Positive when the position is in profit."""
     if sl_initial_distance <= 0:
         return 0.0
@@ -799,6 +799,21 @@ def _aggregator_soft_stop_check(positions, iteration: int) -> set:
     return closed
 
 
+def _manage_hb(phase: str, iteration: int) -> None:
+    """Phase-level heartbeat inside _manage_open_positions so the external
+    watchdog AND the in-log timeline can pinpoint where the hang is.
+    Heartbeat file gets written every call; log line is DEBUG to avoid
+    spamming the journal (set LOG_LEVEL=DEBUG to see them when debugging)."""
+    try:
+        Path("/opt/trading-bot/state/auto_trader.heartbeat").write_text(
+            f"{datetime.now(timezone.utc).isoformat()} iter={iteration} phase=mgr.{phase}\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    log.debug("mgr.%s", phase)
+
+
 def _manage_open_positions(iteration: int) -> None:
     """For each of THIS bot's open MT5 positions:
       - aggregator soft-stop check (closes if floating PnL exceeds threshold)
@@ -809,34 +824,44 @@ def _manage_open_positions(iteration: int) -> None:
 
     Also detects positions that have closed since the last call (by diffing
     state file vs current open positions) and writes a research_close
-    record for each — pulling the OUT deal pnl/exit price from MT5 history.
+    record for each - pulling the OUT deal pnl/exit price from MT5 history.
     """
     from server import MODE  # noqa: WPS433
     if MODE == "paper":
         return
 
+    _manage_hb("positions_get", iteration)
     try:
         positions = mt5.positions_get(magic=int(TRADING_MAGIC)) or []
     except Exception as exc:  # noqa: BLE001
         log.warning("manage: positions_get failed: %s", exc)
         return
+    if not positions:
+        # No positions to manage - bail early; everything below assumes >=1.
+        _manage_hb("done_no_positions", iteration)
+        return
+    _manage_hb(f"positions_got_{len(positions)}", iteration)
 
     # Aggregator soft-stop runs FIRST. Any positions it closes are removed
     # from the management loop below so we don't try to BE/trail a closed one.
+    _manage_hb("softstop_start", iteration)
     soft_closed = _aggregator_soft_stop_check(positions, iteration)
+    _manage_hb(f"softstop_done_{len(soft_closed)}", iteration)
     if soft_closed:
         positions = [p for p in positions if int(p.ticket) not in soft_closed]
 
     # Detect closures: anything in research state that's no longer open
+    _manage_hb("detect_closures_start", iteration)
     try:
         live_tickets = {int(p.ticket) for p in positions}
         state = _research_load_state()
         closed_tickets = [int(t) for t in state.keys() if int(t) not in live_tickets]
+        _manage_hb(f"closures_found_{len(closed_tickets)}", iteration)
         for ticket in closed_tickets:
             try:
                 # Find the matching OUT deal in MT5 history. The
                 # ``position=`` kwarg of history_deals_get is unreliable on
-                # some brokers — they return ALL deals in the window. Filter
+                # some brokers - they return ALL deals in the window. Filter
                 # by position_id manually to be safe.
                 from datetime import timedelta as _td
                 end = datetime.now(timezone.utc) + _td(hours=24)
@@ -855,7 +880,7 @@ def _manage_open_positions(iteration: int) -> None:
                          and d.entry == mt5.DEAL_ENTRY_OUT), None)
                 if out_deal is None:
                     log.warning("close detected for %s but no OUT deal found", ticket)
-                    # Drop it from state anyway — don't keep retrying
+                    # Drop it from state anyway - don't keep retrying
                     state.pop(str(int(ticket)), None)
                     _research_save_state(state)
                     if aggregator_state.get_position(int(ticket)):
@@ -947,21 +972,23 @@ def _manage_open_positions(iteration: int) -> None:
         log.warning("close detection failed: %s", exc)
 
     # Cargar state una sola vez para todos los tickets del loop. Si el load
-    # falla, usamos {} y los lookups por ticket retornarán None — el código
+    # falla, usamos {} y los lookups por ticket retornarán None - el código
     # tiene fallbacks (ATR actual × 1.5).
     try:
         state = _research_load_state()
     except Exception:  # noqa: BLE001
         state = {}
 
+    _manage_hb("be_trailing_start", iteration)
     _agg_open = aggregator_state.list_positions()
 
     for p in positions:
         try:
-            # Aggregator positions skip BE/trailing — exit logic is
+            # Aggregator positions skip BE/trailing - exit logic is
             # soft-stop (closes early on drawdown) or natural TP hit.
             # Moving SL would corrupt the "no real SL" contract.
             if str(int(p.ticket)) in _agg_open:
+                _manage_hb(f"skip_agg_{int(p.ticket)}", iteration)
                 continue
 
             sym = p.symbol
@@ -981,7 +1008,7 @@ def _manage_open_positions(iteration: int) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-            # Initial SL distance — anchor para R-progress. Preferimos lo que
+            # Initial SL distance - anchor para R-progress. Preferimos lo que
             # se persistió en position_state.json al abrir (atr_at_entry +
             # sl_atr_mult según la estrategia). Si no existe (posiciones
             # legacy abiertas antes de este fix), reconstruimos desde:
@@ -1025,7 +1052,7 @@ def _manage_open_positions(iteration: int) -> None:
             )
 
             if r < 1.0:
-                # Not far enough into profit yet — leave alone
+                # Not far enough into profit yet - leave alone
                 continue
 
             # === Phase 1: breakeven ===
@@ -1062,7 +1089,7 @@ def _manage_open_positions(iteration: int) -> None:
                     # SILENCED: SL breakeven telegram
                 continue
 
-            # === Phase 2: ATR trailing — usa el multiplier de la estrategia ===
+            # === Phase 2: ATR trailing - usa el multiplier de la estrategia ===
             # Antes hardcoded 1.0 × ATR para todos. Ahora usamos el sl_atr_mult
             # de la estrategia que abrió el trade (1.5 trend_rider, 2.0
             # breakout_hunter, etc.). El trail debe respetar la "amplitud"
@@ -1107,9 +1134,11 @@ def _manage_open_positions(iteration: int) -> None:
                         getattr(p, "ticket", "?"), exc)
             continue
 
+    _manage_hb("done", iteration)
+
 
 def _atr_distance(bars, default=0.0010) -> float:
-    """ATR(14) on the last bar — fallback to a sensible default."""
+    """ATR(14) on the last bar - fallback to a sensible default."""
     closes = [float(b["close"]) for b in bars]
     highs = [float(b["high"]) for b in bars]
     lows = [float(b["low"]) for b in bars]
@@ -1352,7 +1381,7 @@ def main():
     watchlist = [s.strip() for s in watchlist if s.strip()]
 
     _active_name = strat_engine.get_active_strategy().name
-    log.info("auto-trader starting — interval=%ss risk=%.1f%% min_score=%d watchlist=%s",
+    log.info("auto-trader starting - interval=%ss risk=%.1f%% min_score=%d watchlist=%s",
              args.interval, args.risk_pct, args.min_score, watchlist)
 
     # Inicializar capital_ledger con el balance real de MT5 (si está conectado).
@@ -1372,7 +1401,7 @@ def main():
     except Exception as _exc_l:
         log.warning("capital_ledger init failed: %s", _exc_l)
 
-    # Cargar user_settings — el bot respeta el style preset, las sesiones y
+    # Cargar user_settings - el bot respeta el style preset, las sesiones y
     # la meta del usuario. Si no hay user_settings (instalación nueva), se
     # usan defaults razonables.
     try:
@@ -1407,21 +1436,45 @@ def main():
             "min_score": args.min_score, "watchlist": watchlist})
 
     iteration = 0
+    HEARTBEAT_FILE = Path("/opt/trading-bot/state/auto_trader.heartbeat")
+    HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    def _heartbeat(phase: str) -> None:
+        """Touch the heartbeat file with the current phase so the external
+        watchdog (cron) can tell whether the bot is alive AND making forward
+        progress. If this file goes stale > 5 min, watchdog kills the proc
+        and systemd restarts."""
+        try:
+            HEARTBEAT_FILE.write_text(
+                f"{datetime.now(timezone.utc).isoformat()} iter={iteration} phase={phase}\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    _heartbeat("startup")
+
     while _running:
         iteration += 1
         try:
+            # Per-iter heartbeat. The state: line further down is the actual
+            # human-facing log; this is debug to keep journal terse.
+            log.debug("iter %d start", iteration)
+            _heartbeat("iter_start")
+
             # 0. kill-switch
             if halt_mod.is_halted():
-                log.info("HALT armed — skipping iteration")
+                log.info("HALT armed - skipping iteration")
                 _audit({"iter": iteration, "skip": "HALTED",
                         "reason": halt_mod.reason()})
                 _sleep(args.interval)
                 continue
 
             # 1. account state + already-open positions
+            _heartbeat("health_check")
             health = trading.health()
             if not health.get("connected"):
-                log.warning("MT5 disconnected — waiting")
+                log.warning("MT5 disconnected - waiting")
                 _audit({"iter": iteration, "skip": "MT5_DISCONNECTED"})
                 _sleep(args.interval)
                 continue
@@ -1429,7 +1482,9 @@ def main():
             # 1.4 manage existing demo/live positions (BE + ATR trailing).
             # Runs BEFORE the paper monitor so MT5 SL changes propagate before
             # any other check.
+            _heartbeat("manage_open_positions")
             _manage_open_positions(iteration)
+            _heartbeat("after_manage")
 
             # Periodic summary every 12 iterations (~1 hour at 5min interval)
             # Count closed trades today for summary trigger
@@ -1484,6 +1539,7 @@ def main():
                 _tg_send._last_summary_at = _closed_trade_count
 
             # 1.5 monitor open paper trades (always, even if we won't open new)
+            _heartbeat("monitor_paper")
             monitor = _monitor_paper_trades()
             for closed in monitor["closed"]:
                 log.info("PAPER %s closed: %s @ %s pnl=$%.2f (%sR)",
@@ -1493,14 +1549,19 @@ def main():
                 _audit({"iter": iteration, "phase": "close",
                         "trade": closed})
 
+            _heartbeat("get_account_info")
             acc = trading.get_account_info()
+            _heartbeat("get_open_positions")
             mt5_positions = trading.get_open_positions().get("positions", [])
+            _heartbeat("post_mt5_calls")
             balance = acc.get("balance", 0.0)
             equity = acc.get("equity", balance) or balance
 
             # Capital ledger: actualiza balance/peak + detecta drift sospechoso
+            _heartbeat("capital_ledger_drift")
             try:
                 _drift = capital_ledger.is_drift_suspicious(balance)
+                _heartbeat("capital_ledger_drift_done")
                 if _drift:
                     log.warning("capital drift detected: %s", _drift["hint"])
                     _audit({"iter": iteration, "event": "capital_drift", **_drift})
@@ -1508,7 +1569,9 @@ def main():
                         f"⚠️ *Cambio de balance no esperado*\n"
                         f"{_drift['hint']}"
                     )
+                _heartbeat("capital_ledger_update")
                 capital_ledger.update_balance(balance, equity)
+                _heartbeat("capital_ledger_done")
             except Exception as _exc_cl:
                 log.debug("capital_ledger update failed: %s", _exc_cl)
 
@@ -1519,6 +1582,10 @@ def main():
             total_open = len(mt5_positions) + paper_open_n
             open_symbols = {p["symbol"].upper() for p in mt5_positions} | \
                             {p["symbol"].upper() for p in paper_trades}
+            log.info("state: balance=$%.2f equity=$%.2f open=%d (%s) agg_active=%s",
+                     balance, equity, total_open,
+                     ",".join(sorted(open_symbols)) or "-",
+                     aggregator_state.is_active_strategy())
 
             # === Aggregator single-position lock ===
             # Si signal_aggregator es la estrategia activa (mode=single +
@@ -1527,16 +1594,18 @@ def main():
             # operación corriendo, sin SL real, hasta que cierre por TP o
             # soft-stop. El soft-stop se evalúa en _manage_open_positions.
             if aggregator_state.is_active_strategy() and total_open >= 1:
-                if iteration % 10 == 0:
-                    log.info("aggregator: %d positions open — waiting for "
-                             "TP/soft-stop before new entry", total_open)
+                # Siempre log (no rate-limit) para distinguir "lock activo"
+                # de "bot colgado" desde journalctl.
+                log.info("aggregator locked: %d position(s) open (%s) - "
+                         "waiting for TP/soft-stop",
+                         total_open, ",".join(sorted(open_symbols)) or "?")
                 _audit({"iter": iteration, "skip": "AGGREGATOR_ONE_AT_A_TIME",
                         "open_symbols": list(open_symbols),
                         "total_open": total_open})
                 _sleep(args.interval)
                 continue
             # if total_open >= MAX_OPEN_POSITIONS:
-                # log.info("max positions hit (%d/%d) — passing",
+                # log.info("max positions hit (%d/%d) - passing",
                          # total_open, MAX_OPEN_POSITIONS)
                 # _audit({"iter": iteration, "skip": "MAX_POSITIONS_BOT",
                         # "balance": balance, "open_symbols": list(open_symbols)})
@@ -1544,17 +1613,17 @@ def main():
                 # continue
 
             if balance <= 0:
-                log.warning("balance %.2f — nothing to risk", balance)
+                log.warning("balance %.2f - nothing to risk", balance)
                 _audit({"iter": iteration, "skip": "NO_BALANCE",
                         "balance": balance})
                 _sleep(args.interval)
                 continue
 
-            # 1.6 SESSION FILTER — el usuario configuró qué sesiones quiere
+            # 1.6 SESSION FILTER - el usuario configuró qué sesiones quiere
             # operar (NY/Londres/Asia/24-7). Si la hora UTC actual no está
             # en ninguna sesión activa, salteamos el scan. Las posiciones
             # abiertas SIGUEN siendo manejadas (BE/trailing) por
-            # _manage_open_positions arriba — solo bloqueamos APERTURAS nuevas.
+            # _manage_open_positions arriba - solo bloqueamos APERTURAS nuevas.
             try:
                 _us_now = user_settings.load()
             except Exception:
@@ -1562,7 +1631,7 @@ def main():
             _utc_h = datetime.now(timezone.utc).hour
             if _us_now and not user_settings.is_session_active(_utc_h, _us_now):
                 if iteration % 10 == 0:  # log cada N para no spammear
-                    log.info("session inactive (h=%d UTC, active=%s) — skip new entries",
+                    log.info("session inactive (h=%d UTC, active=%s) - skip new entries",
                              _utc_h, _us_now.get("sessions"))
                 _audit({"iter": iteration, "skip": "SESSION_INACTIVE",
                         "utc_hour": _utc_h,
@@ -1570,7 +1639,7 @@ def main():
                 _sleep(args.interval)
                 continue
 
-            # 2. scan — exclude symbols we already have a position in
+            # 2. scan - exclude symbols we already have a position in
             scannable = [s for s in watchlist if s.upper() not in open_symbols]
             if not scannable:
                 _audit({"iter": iteration, "skip": "ALL_SYMBOLS_OPEN",
@@ -1624,13 +1693,13 @@ def main():
                 # DISABLED: _gf_sl_dist = abs(best["entry"] - best["sl"])
                 # DISABLED: _gf_spread_pct = (_gf_spread / _gf_sl_dist * 100) if _gf_sl_dist > 0 else 999
                 # DISABLED: if _gf_spread_pct > MAX_SPREAD_PCT_OF_R:
-                    # DISABLED: log.info("SPREAD FILTER: %s %.1f%% > %.0f%% — skip",
+                    # DISABLED: log.info("SPREAD FILTER: %s %.1f%% > %.0f%% - skip",
                              # DISABLED: best["symbol"], _gf_spread_pct, MAX_SPREAD_PCT_OF_R)
                     # DISABLED: _audit({"iter": iteration, "skip": "SPREAD_TOO_HIGH",
                             # DISABLED: "symbol": best["symbol"], "spread_pct": round(_gf_spread_pct, 1)})
                     # DISABLED: _sleep(args.interval)
                     # DISABLED: continue
- # DISABLED:             # Session filter: REMOVED — each strategy defines its own trading hours
+ # DISABLED:             # Session filter: REMOVED - each strategy defines its own trading hours
             # via strategy.hard_filter() -> base.is_in_trading_hours()
             # DISABLED: _gf_hour = datetime.now(timezone.utc).hour
  # DISABLED:             # Strategy-specific hard filter (use the strategy that proposed the signal)
@@ -1649,12 +1718,12 @@ def main():
                 # DISABLED: )
                 # DISABLED: _hf_pass, _hf_reason = _active_strat.hard_filter(_mock, _gf_tick)
                 # DISABLED: if not _hf_pass:
-                    # DISABLED: log.info("STRATEGY FILTER: %s %s — skip", best["symbol"], _hf_reason)
+                    # DISABLED: log.info("STRATEGY FILTER: %s %s - skip", best["symbol"], _hf_reason)
                     # DISABLED: _audit({"iter": iteration, "skip": "STRATEGY_FILTER",
                             # DISABLED: "symbol": best["symbol"], "reason": _hf_reason})
                     # DISABLED: _sleep(args.interval)
                     # DISABLED: continue
-            # 2.5 CORRELATION FILTER — bloquea concentración silenciosa
+            # 2.5 CORRELATION FILTER - bloquea concentración silenciosa
             # Hoy el bot abre 5 trades USDxxx pensando que está diversificado;
             # son una sola apuesta direccional con 5x leverage.
             _all_open = list(mt5_positions) + [
@@ -1676,10 +1745,10 @@ def main():
                 _sleep(args.interval)
                 continue
 
-            # 3. size — KELLY FRACTION ESCALADO POR SCORE Y EXPECTANCY
+            # 3. size - KELLY FRACTION ESCALADO POR SCORE Y EXPECTANCY
             sym_info = _symbol_size_inputs(best["symbol"])
             if sym_info is None:
-                log.warning("no symbol info for %s — skip", best["symbol"])
+                log.warning("no symbol info for %s - skip", best["symbol"])
                 _sleep(args.interval)
                 continue
 
@@ -1702,7 +1771,7 @@ def main():
             )
             _eff_risk_pct = _kelly["risk_pct"]
             if _eff_risk_pct <= 0.0:
-                log.info("kelly = 0 for %s (%s) — skip",
+                log.info("kelly = 0 for %s (%s) - skip",
                          best["symbol"], _kelly["components"].get("reason"))
                 _audit({"iter": iteration, "skip": "KELLY_ZERO",
                         "symbol": best["symbol"], "kelly": _kelly})
@@ -1712,12 +1781,12 @@ def main():
                 continue
 
             # max_lot dinámico: cap absoluto + cap por NOCIONAL.
-            # Antes era 0.5 lots fijo — pero 0.5 lots BTCUSD a $77k = $38k
+            # Antes era 0.5 lots fijo - pero 0.5 lots BTCUSD a $77k = $38k
             # exposure en cuenta de $200 = 190x leverage = una vela ATR mata
             # la cuenta. El nocional cap evita esto.
             #
             # Per-class defaults (env override para tunear):
-            #   - FX: hasta 1000% notional (10x lev — usual para 0.01 lots
+            #   - FX: hasta 1000% notional (10x lev - usual para 0.01 lots
             #     en cuenta de $200)
             #   - Crypto: 200% notional (2x lev, BTC/ETH ya volátiles)
             #   - Otros: 500% notional default
@@ -1752,11 +1821,11 @@ def main():
             _eff_max_lot = _math.floor(_eff_max_lot_raw / _step) * _step
             _eff_max_lot = round(_eff_max_lot, 4)
             # Si el cap nocional pone el max_lot por debajo del mínimo del
-            # broker, la cuenta es muy chica para tradear este símbolo —
+            # broker, la cuenta es muy chica para tradear este símbolo -
             # NO override forzado al min, mejor saltar (preserva el sentido
             # del cap nocional).
             if _eff_max_lot < sym_info["volume_min"]:
-                log.info("notional cap < min_lot for %s (max=%.4f min=%.4f) — skip",
+                log.info("notional cap < min_lot for %s (max=%.4f min=%.4f) - skip",
                          best["symbol"], _eff_max_lot, sym_info["volume_min"])
                 _audit({"iter": iteration, "skip": "NOTIONAL_TOO_SMALL",
                         "symbol": best["symbol"],
@@ -1889,7 +1958,7 @@ def main():
                             "symbol": best["symbol"], "reason": _reason,
                             "until": datetime.fromtimestamp(_until, timezone.utc).isoformat()})
 
-            # Research log — capture the full setup snapshot for any successful
+            # Research log - capture the full setup snapshot for any successful
             # placement (paper or demo). This is the per-trade feedback record.
             if result.get("ok"):
                 try:
@@ -1976,10 +2045,20 @@ def main():
 
 
 def _sleep(total: int) -> None:
+    """Sleep total seconds, but refresh the heartbeat every 30s so the
+    external watchdog doesn't think we're hung during long intervals."""
     slept = 0
     while _running and slept < total:
         time.sleep(1)
         slept += 1
+        if slept % 30 == 0:
+            try:
+                Path("/opt/trading-bot/state/auto_trader.heartbeat").write_text(
+                    f"{datetime.now(timezone.utc).isoformat()} sleep={slept}/{total}\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
